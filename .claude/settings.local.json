@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip --version)",
+      "Bash(uv --version)",
+      "Bash(pip install:*)",
+      "Bash(python -m dendr --version)",
+      "Bash(python -m dendr --help)",
+      "Bash(mkdir -p /tmp/test-vault)",
+      "Bash(python -m dendr init /tmp/test-vault)",
+      "Read(//tmp/test-vault/**)",
+      "Bash(python -m dendr stats)",
+      "Bash(python -m dendr lint)",
+      "Bash(python -m pytest tests/ -v)"
+    ]
+  }
+}
