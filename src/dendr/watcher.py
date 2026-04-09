@@ -7,10 +7,8 @@ Debounces rapid changes to avoid re-processing mid-edit.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
-from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -18,7 +16,11 @@ from watchdog.observers import Observer
 from dendr.config import Config
 from dendr.db import connect, init_schema
 from dendr.llm import LLMClient
-from dendr.metrics import collect_db_metrics, collect_queue_metrics, start_metrics_server
+from dendr.metrics import (
+    collect_db_metrics,
+    collect_queue_metrics,
+    start_metrics_server,
+)
 from dendr.pipeline import run_ingest
 
 logger = logging.getLogger(__name__)

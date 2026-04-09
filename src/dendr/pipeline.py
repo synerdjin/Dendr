@@ -11,6 +11,7 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from dendr import db, queue
 from dendr.metrics import (
@@ -25,8 +26,8 @@ from dendr.canonicalize import canonicalize_concepts
 from dendr.config import Config
 from dendr.enrichment import enrich_block
 from dendr.llm import LLMClient
-from dendr.models import Block, Claim, ClaimStatus, Concept, PageType, QueueItem
-from dendr.parser import get_file_hash, inject_block_ids, parse_daily_note
+from dendr.models import Block, Claim, ClaimStatus, PageType, QueueItem
+from dendr.parser import inject_block_ids, parse_daily_note
 from dendr.privacy import filter_blocks
 from dendr.wiki import (
     append_activity_log,
@@ -117,9 +118,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             config.backpressure_days,
         )
 
-    existing_concepts = [
-        r["slug"] for r in db.get_all_concepts(conn)
-    ]
+    existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
 
     # Claim all items for processing upfront
     claimed: list[QueueItem] = []
@@ -131,9 +130,10 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         return 0
 
     # ── Phase 1: Enrichment (enrichment model stays loaded) ──────────
-    logger.info("Phase 1/3: enriching %d blocks", len(claimed))
+    total = len(claimed)
+    logger.info("Phase 1/3: enriching %d blocks", total)
     enriched: dict[str, tuple[QueueItem, Block, Any]] = {}
-    for item in claimed:
+    for idx, item in enumerate(claimed, 1):
         try:
             block = Block(
                 block_id=item.block_id,
@@ -146,20 +146,23 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                 attachment_path=item.attachment_path,
                 attachment_type=item.attachment_type,
             )
+            logger.info(
+                "Phase 1/3: enriching block %d/%d: %s", idx, total, item.block_id
+            )
             result = enrich_block(block, llm, existing_concepts, shallow=shallow)
             enriched[item.block_id] = (item, block, result)
         except Exception as e:
             logger.error("Failed to enrich block %s: %s", item.block_id, e)
 
     # ── Phase 2: Canonicalization & embedding (embedding model stays loaded) ─
-    logger.info("Phase 2/3: canonicalizing & embedding %d blocks", len(enriched))
+    total2 = len(enriched)
+    logger.info("Phase 2/3: canonicalizing & embedding %d blocks", total2)
     # Per-block: slug_map and pre-computed claim embeddings
     phase2: dict[str, tuple[QueueItem, Block, Any, dict[str, str], dict[int, Any]]] = {}
-    for block_id, (item, block, result) in enriched.items():
+    for idx2, (block_id, (item, block, result)) in enumerate(enriched.items(), 1):
         try:
-            slug_map = canonicalize_concepts(
-                result.concepts, llm, conn, config
-            )
+            logger.info("Phase 2/3: embedding block %d/%d: %s", idx2, total2, block_id)
+            slug_map = canonicalize_concepts(result.concepts, llm, conn, config)
 
             claim_embeddings: dict[int, Any] = {}
             for i, claim_data in enumerate(result.claims):
@@ -173,10 +176,14 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             logger.error("Failed to canonicalize block %s: %s", block_id, e)
 
     # ── Phase 3: Wiki generation & DB commits (enrichment model stays loaded) ─
-    logger.info("Phase 3/3: writing wiki pages & committing %d blocks", len(phase2))
+    total3 = len(phase2)
+    logger.info("Phase 3/3: writing wiki pages & committing %d blocks", total3)
     processed = 0
     for block_id, (item, block, result, slug_map, claim_embeddings) in phase2.items():
         try:
+            logger.info(
+                "Phase 3/3: committing block %d/%d: %s", processed + 1, total3, block_id
+            )
             conn.execute("BEGIN")
             try:
                 source_ref = Path(item.source_file).stem
@@ -191,9 +198,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
                     sp_key = f"{claim_data.subject}|{claim_data.predicate}"
 
-                    existing = db.find_similar_claim(
-                        conn, sp_key, claim_data.object
-                    )
+                    existing = db.find_similar_claim(conn, sp_key, claim_data.object)
                     if existing:
                         db.reinforce_claim(conn, existing["id"])
                         CLAIMS_REINFORCED.inc()
@@ -230,25 +235,38 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                     for contra in contradictions:
                         db.challenge_claim(conn, contra["id"])
                         CONTRADICTIONS_DETECTED.inc()
-                        db.append_log(conn, "contradiction", {
-                            "new_claim_id": new_id,
-                            "challenged_id": contra["id"],
-                            "subject_predicate": sp_key,
-                        })
+                        db.append_log(
+                            conn,
+                            "contradiction",
+                            {
+                                "new_claim_id": new_id,
+                                "challenged_id": contra["id"],
+                                "subject_predicate": sp_key,
+                            },
+                        )
 
                 for candidate, slug in slug_map.items():
                     title = candidate.replace("-", " ").title()
                     evidence = [
-                        c.text for c in result.claims
-                        if any(cc in slug_map and slug_map[cc] == slug for cc in c.concepts)
+                        c.text
+                        for c in result.claims
+                        if any(
+                            cc in slug_map and slug_map[cc] == slug for cc in c.concepts
+                        )
                     ]
                     if not evidence:
                         evidence = [f"Referenced in {source_ref}"]
 
                     ensure_page(config, conn, slug, title, PageType.CONCEPT)
                     append_evidence(
-                        config, conn, llm, slug, title,
-                        evidence, source_ref, PageType.CONCEPT,
+                        config,
+                        conn,
+                        llm,
+                        slug,
+                        title,
+                        evidence,
+                        source_ref,
+                        PageType.CONCEPT,
                     )
 
                 db.upsert_block_state(

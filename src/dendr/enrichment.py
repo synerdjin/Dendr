@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
-from dendr.config import Config
 from dendr.llm import LLMClient
-from dendr.models import Block, ClaimStatus, EnrichmentResult, ExtractedClaim
+from dendr.models import Block, EnrichmentResult, ExtractedClaim
 
 logger = logging.getLogger(__name__)
 

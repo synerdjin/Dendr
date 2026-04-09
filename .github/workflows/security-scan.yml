@@ -117,7 +117,7 @@ jobs:
       - name: Build image
         run: docker build -t dendr:scan . --no-cache
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: "dendr:scan"
           format: "sarif"
@@ -131,7 +131,7 @@ jobs:
           category: trivy
       - name: Trivy table output
         if: always()
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: "dendr:scan"
           format: "table"

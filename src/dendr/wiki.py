@@ -34,9 +34,7 @@ def _hash_content(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def _page_template(
-    slug: str, title: str, page_type: PageType
-) -> str:
+def _page_template(slug: str, title: str, page_type: PageType) -> str:
     """Generate a new wiki page with the standard template."""
     now = datetime.now().strftime("%Y-%m-%d")
     return f"""---
@@ -99,7 +97,7 @@ def _update_frontmatter(content: str, key: str, value: str) -> str:
         fm = pattern.sub(f"{key}: {value}", fm)
     else:
         fm += f"\n{key}: {value}"
-    return f"---\n{fm}\n---\n" + content[match.end():]
+    return f"---\n{fm}\n---\n" + content[match.end() :]
 
 
 def get_page_path(config: Config, slug: str, page_type: PageType) -> Path:
@@ -216,23 +214,35 @@ def update_index(config: Config, conn) -> None:
         "SELECT slug, title, page_type, updated_at FROM concepts ORDER BY page_type, slug"
     ).fetchall()
 
-    lines = ["---", "type: index", f"updated: {datetime.now().strftime('%Y-%m-%d')}", "---", "", "# Dendr Knowledge Index", ""]
+    lines = [
+        "---",
+        "type: index",
+        f"updated: {datetime.now().strftime('%Y-%m-%d')}",
+        "---",
+        "",
+        "# Dendr Knowledge Index",
+        "",
+    ]
 
     current_type = None
     for c in concepts:
         if c["page_type"] != current_type:
             current_type = c["page_type"]
             lines.append(f"\n## {current_type.title()}s\n")
-        lines.append(f"- [[{c['slug']}]] — {c['title']} *(updated {c['updated_at'][:10]})*")
+        lines.append(
+            f"- [[{c['slug']}]] — {c['title']} *(updated {c['updated_at'][:10]})*"
+        )
 
     stats = conn.execute(
         "SELECT COUNT(*) as n FROM claims WHERE status != 'superseded'"
     ).fetchone()
-    lines.extend([
-        "",
-        "---",
-        f"*{len(concepts)} pages, {stats['n']} active claims*",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            f"*{len(concepts)} pages, {stats['n']} active claims*",
+        ]
+    )
 
     index_path = config.wiki_dir / "index.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
@@ -242,7 +252,9 @@ def append_activity_log(config: Config, entry: str) -> None:
     """Append to Wiki/log.md."""
     log_path = config.wiki_dir / "log.md"
     if not log_path.exists():
-        log_path.write_text("---\ntype: log\n---\n\n# Activity Log\n\n", encoding="utf-8")
+        log_path.write_text(
+            "---\ntype: log\n---\n\n# Activity Log\n\n", encoding="utf-8"
+        )
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     with open(log_path, "a", encoding="utf-8") as f:

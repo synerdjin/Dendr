@@ -79,7 +79,9 @@ def _split_into_raw_blocks(lines: list[str]) -> list[tuple[int, int, list[str]]]
     return blocks
 
 
-def parse_daily_note(file_path: Path, attachments_dir: Path | None = None) -> list[Block]:
+def parse_daily_note(
+    file_path: Path, attachments_dir: Path | None = None
+) -> list[Block]:
     """Parse a daily note into blocks.
 
     Each block gets a stable block_id. If the note doesn't have Obsidian

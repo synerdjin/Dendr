@@ -101,8 +101,15 @@ def init(vault_path: str) -> None:
 
 
 @main.command()
-@click.option("--data-dir", type=click.Path(), default=None, help="Override data directory")
-@click.option("--vault", type=click.Path(exists=True, file_okay=False), default=None, help="Override vault path")
+@click.option(
+    "--data-dir", type=click.Path(), default=None, help="Override data directory"
+)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path",
+)
 def daemon(data_dir: str | None, vault: str | None) -> None:
     """Run the watcher daemon (blocks until Ctrl-C)."""
     from dendr.config import Config
@@ -138,7 +145,9 @@ def ingest(data_dir: str | None) -> None:
 
 @main.command()
 @click.argument("query")
-@click.option("--mode", type=click.Choice(["fts", "semantic", "hybrid"]), default="hybrid")
+@click.option(
+    "--mode", type=click.Choice(["fts", "semantic", "hybrid"]), default="hybrid"
+)
 @click.option("--limit", type=int, default=10)
 @click.option("--data-dir", type=click.Path(), default=None)
 def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
@@ -157,14 +166,16 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
     if mode in ("fts", "hybrid"):
         fts = dendr_db.search_claims_fts(conn, query, limit=limit)
         for r in fts:
-            results.append({
-                "id": r["id"],
-                "text": r["text"],
-                "concept": r["concept_slug"],
-                "confidence": r["confidence"],
-                "source": r["source_block_ref"],
-                "type": "fts",
-            })
+            results.append(
+                {
+                    "id": r["id"],
+                    "text": r["text"],
+                    "concept": r["concept_slug"],
+                    "confidence": r["confidence"],
+                    "source": r["source_block_ref"],
+                    "type": "fts",
+                }
+            )
 
     if mode in ("semantic", "hybrid"):
         try:
@@ -173,14 +184,16 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
             sem = dendr_db.search_claims_semantic(conn, emb, limit=limit)
             for r in sem:
                 if not any(x["id"] == r["id"] for x in results):
-                    results.append({
-                        "id": r["id"],
-                        "text": r["text"],
-                        "concept": r["concept_slug"],
-                        "confidence": r["confidence"],
-                        "source": r["source_block_ref"],
-                        "type": "semantic",
-                    })
+                    results.append(
+                        {
+                            "id": r["id"],
+                            "text": r["text"],
+                            "concept": r["concept_slug"],
+                            "confidence": r["confidence"],
+                            "source": r["source_block_ref"],
+                            "type": "semantic",
+                        }
+                    )
         except Exception as e:
             click.echo(f"Semantic search unavailable: {e}", err=True)
 
@@ -216,7 +229,12 @@ def lint(data_dir: str | None) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
-@click.option("--vault", type=click.Path(exists=True, file_okay=False), default=None, help="Override vault path")
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path",
+)
 def serve(data_dir: str | None, vault: str | None) -> None:
     """Start the search HTTP server."""
     from dendr.config import Config
@@ -264,7 +282,9 @@ def stats(data_dir: str | None) -> None:
     default=None,
     help="Obsidian vault path (defaults to configured vault)",
 )
-@click.option("--execute", is_flag=True, help="Actually perform migration (default is dry-run)")
+@click.option(
+    "--execute", is_flag=True, help="Actually perform migration (default is dry-run)"
+)
 def migrate_logseq(logseq_dir: str, vault: str | None, execute: bool) -> None:
     """Migrate a LogSeq vault into Obsidian.
 
@@ -277,6 +297,7 @@ def migrate_logseq(logseq_dir: str, vault: str | None, execute: bool) -> None:
         dst = Path(vault).resolve()
     else:
         from dendr.config import Config
+
         config = Config.load(None)
         dst = config.vault_path
 
@@ -317,7 +338,9 @@ def models() -> None:
 
 
 @models.command("pull")
-@click.option("--role", type=str, default=None, help="Download only this role (e.g. enrichment)")
+@click.option(
+    "--role", type=str, default=None, help="Download only this role (e.g. enrichment)"
+)
 @click.option("--force", is_flag=True, help="Re-download even if present")
 @click.option("--data-dir", type=click.Path(), default=None)
 def models_pull(role: str | None, force: bool, data_dir: str | None) -> None:
@@ -382,7 +405,9 @@ def models_verify(data_dir: str | None) -> None:
         elif status.hash_match is True:
             click.echo(f"  OK       [{role}] {status.spec.filename}")
         else:
-            click.echo(f"  NO HASH  [{role}] {status.spec.filename} (run `dendr models lock` to pin)")
+            click.echo(
+                f"  NO HASH  [{role}] {status.spec.filename} (run `dendr models lock` to pin)"
+            )
 
     if all_ok:
         click.echo("\nAll models verified.")
@@ -409,7 +434,9 @@ def models_list(data_dir: str | None) -> None:
     click.echo(f"{'Role':<14} {'Filename':<42} {'Size':>8} {'Status':<12}")
     click.echo("-" * 80)
     for role, status in statuses.items():
-        size_str = f"{status.spec.size_bytes / 1e9:.1f} GB" if status.spec.size_bytes else "?"
+        size_str = (
+            f"{status.spec.size_bytes / 1e9:.1f} GB" if status.spec.size_bytes else "?"
+        )
         if not status.present:
             state = "MISSING"
         elif status.hash_match is False:

@@ -47,7 +47,11 @@
       "Bash(curl -s http://localhost:9835/metrics)",
       "Bash(docker run:*)",
       "Bash(docker buildx:*)",
-      "Bash(docker manifest:*)"
+      "Bash(docker manifest:*)",
+      "Bash(gh run:*)",
+      "Bash(gh api:*)",
+      "Bash(ruff check:*)",
+      "Bash(python:*)"
     ]
   }
 }

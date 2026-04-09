@@ -1,0 +1,7 @@
+ignored:
+  # Consecutive RUN instructions are intentional for Docker layer caching
+  - DL3059
+  # Apt version pinning not needed — base image is version-pinned
+  - DL3008
+  # Pip version pinning handled by pyproject.toml constraints
+  - DL3013

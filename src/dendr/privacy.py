@@ -14,37 +14,49 @@ from dendr.models import Block
 
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     # API keys / tokens (generic)
-    ("api_key", re.compile(
-        r"""(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)"""
-        r"""\s*[:=]\s*['"]?[A-Za-z0-9\-_\.]{20,}""",
-        re.IGNORECASE,
-    )),
+    (
+        "api_key",
+        re.compile(
+            r"""(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)"""
+            r"""\s*[:=]\s*['"]?[A-Za-z0-9\-_\.]{20,}""",
+            re.IGNORECASE,
+        ),
+    ),
     # AWS keys
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
     # GitHub tokens
     ("github_token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,}")),
     # Generic secret assignment
-    ("secret_assign", re.compile(
-        r"""(?:secret|password|passwd|pwd|token|credential)"""
-        r"""\s*[:=]\s*['"]?[^\s'"]{8,}""",
-        re.IGNORECASE,
-    )),
+    (
+        "secret_assign",
+        re.compile(
+            r"""(?:secret|password|passwd|pwd|token|credential)"""
+            r"""\s*[:=]\s*['"]?[^\s'"]{8,}""",
+            re.IGNORECASE,
+        ),
+    ),
     # Private keys
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----")),
     # Connection strings with passwords
-    ("connection_string", re.compile(
-        r"""(?:postgres|mysql|mongodb|redis|amqp)://[^:]+:[^@]+@""",
-        re.IGNORECASE,
-    )),
+    (
+        "connection_string",
+        re.compile(
+            r"""(?:postgres|mysql|mongodb|redis|amqp)://[^:]+:[^@]+@""",
+            re.IGNORECASE,
+        ),
+    ),
     # SSN-like patterns (US)
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     # Credit card numbers (basic)
     ("credit_card", re.compile(r"\b(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13})\b")),
     # Email + password combos
-    ("email_password", re.compile(
-        r"""[\w.+-]+@[\w-]+\.[\w.]+\s*[:\/]\s*\S{6,}""",
-        re.IGNORECASE,
-    )),
+    (
+        "email_password",
+        re.compile(
+            r"""[\w.+-]+@[\w-]+\.[\w.]+\s*[:\/]\s*\S{6,}""",
+            re.IGNORECASE,
+        ),
+    ),
 ]
 
 # User-defined redaction tag in daily notes

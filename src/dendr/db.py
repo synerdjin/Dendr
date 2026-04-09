@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import Claim, ClaimStatus, Concept, PageType
+from dendr.models import Claim, Concept
 
 # sqlite-vec is loaded as an extension at runtime
 _VEC_LOADED = False
@@ -222,9 +222,7 @@ def reinforce_claim(conn: sqlite3.Connection, claim_id: int) -> None:
     )
 
 
-def supersede_claim(
-    conn: sqlite3.Connection, old_id: int, new_id: int
-) -> None:
+def supersede_claim(conn: sqlite3.Connection, old_id: int, new_id: int) -> None:
     """Mark old claim as superseded by new one."""
     now = datetime.now().isoformat()
     conn.execute(
@@ -453,15 +451,13 @@ def search_claims_semantic(
 
     ids = [r["claim_id"] for r in vec_rows]
     placeholders = ",".join("?" * len(ids))
-    q = f"""
-        SELECT * FROM claims
-        WHERE id IN ({placeholders})
-          AND status != 'superseded'
-    """
+    params: list = list(ids)
+    q = f"SELECT * FROM claims WHERE id IN ({placeholders}) AND status != 'superseded'"
     if not include_private:
         q += " AND private = 0"
-    q += f" LIMIT {limit}"
-    return conn.execute(q, ids).fetchall()
+    q += " LIMIT ?"
+    params.append(limit)
+    return conn.execute(q, params).fetchall()
 
 
 # --- Stats ---

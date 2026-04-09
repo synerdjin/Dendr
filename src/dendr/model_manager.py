@@ -139,8 +139,7 @@ def check_all_models(
 ) -> dict[str, ModelStatus]:
     """Check status of all models."""
     return {
-        role: check_model(models_dir, spec)
-        for role, spec in manifest.specs.items()
+        role: check_model(models_dir, spec) for role, spec in manifest.specs.items()
     }
 
 
@@ -184,11 +183,17 @@ def pull_model(
         if spec.sha256:
             actual_hash = sha256_file(model_path)
             if actual_hash == spec.sha256:
-                logger.info("[%s] Already present and verified: %s", spec.role, spec.filename)
+                logger.info(
+                    "[%s] Already present and verified: %s", spec.role, spec.filename
+                )
                 return model_path
-            logger.warning("[%s] Hash mismatch, re-downloading: %s", spec.role, spec.filename)
+            logger.warning(
+                "[%s] Hash mismatch, re-downloading: %s", spec.role, spec.filename
+            )
         else:
-            logger.info("[%s] Already present (no hash to verify): %s", spec.role, spec.filename)
+            logger.info(
+                "[%s] Already present (no hash to verify): %s", spec.role, spec.filename
+            )
             return model_path
 
     logger.info("[%s] Downloading %s from %s...", spec.role, spec.filename, spec.repo)
@@ -198,6 +203,7 @@ def pull_model(
         filename=spec.filename,
         local_dir=str(models_dir),
         token=token,
+        revision="main",  # pin to branch; post-download SHA256 check provides integrity
     )
 
     # huggingface_hub may place the file in a subdirectory or use its cache;

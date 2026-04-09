@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from prometheus_client import Counter, Gauge, Histogram, generate_latest, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ CONCEPTS_TOTAL = Gauge(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def start_metrics_server(port: int = 9100) -> None:
     """Start a standalone Prometheus metrics HTTP server (for the daemon)."""
     try:
@@ -152,8 +153,12 @@ def collect_queue_metrics(config) -> None:
         pending_dir: Path = config.pending_dir
         processing_dir: Path = config.processing_dir
 
-        pending_count = len(list(pending_dir.glob("*.json"))) if pending_dir.exists() else 0
-        processing_count = len(list(processing_dir.glob("*.json"))) if processing_dir.exists() else 0
+        pending_count = (
+            len(list(pending_dir.glob("*.json"))) if pending_dir.exists() else 0
+        )
+        processing_count = (
+            len(list(processing_dir.glob("*.json"))) if processing_dir.exists() else 0
+        )
 
         QUEUE_PENDING.set(pending_count)
         QUEUE_PROCESSING.set(processing_count)
@@ -165,6 +170,7 @@ def collect_db_metrics(conn) -> None:
     """Read database stats and update gauge values."""
     try:
         from dendr import db
+
         stats = db.get_stats(conn)
         ACTIVE_CLAIMS.set(stats.get("active_claims", 0))
         CONCEPTS_TOTAL.set(stats.get("concepts", 0))

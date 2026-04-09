@@ -63,16 +63,18 @@ def get_pending(config: Config) -> list[QueueItem]:
     for path in sorted(config.pending_dir.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            items.append(QueueItem(
-                block_id=data["block_id"],
-                source_file=data["source_file"],
-                block_hash=data["block_hash"],
-                block_text=data["block_text"],
-                private=data.get("private", False),
-                attachment_path=data.get("attachment_path"),
-                attachment_type=data.get("attachment_type"),
-                created_at=datetime.fromisoformat(data["created_at"]),
-            ))
+            items.append(
+                QueueItem(
+                    block_id=data["block_id"],
+                    source_file=data["source_file"],
+                    block_hash=data["block_hash"],
+                    block_text=data["block_text"],
+                    private=data.get("private", False),
+                    attachment_path=data.get("attachment_path"),
+                    attachment_type=data.get("attachment_type"),
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                )
+            )
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning("Corrupt queue item %s: %s", path, e)
     return items
@@ -85,16 +87,18 @@ def get_stale_processing(config: Config) -> list[QueueItem]:
     for path in config.processing_dir.glob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            items.append(QueueItem(
-                block_id=data["block_id"],
-                source_file=data["source_file"],
-                block_hash=data["block_hash"],
-                block_text=data["block_text"],
-                private=data.get("private", False),
-                attachment_path=data.get("attachment_path"),
-                attachment_type=data.get("attachment_type"),
-                created_at=datetime.fromisoformat(data["created_at"]),
-            ))
+            items.append(
+                QueueItem(
+                    block_id=data["block_id"],
+                    source_file=data["source_file"],
+                    block_hash=data["block_hash"],
+                    block_text=data["block_text"],
+                    private=data.get("private", False),
+                    attachment_path=data.get("attachment_path"),
+                    attachment_type=data.get("attachment_type"),
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                )
+            )
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning("Corrupt processing item %s: %s", path, e)
     return items

@@ -8,10 +8,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from pathlib import Path
 
-import numpy as np
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Query, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
@@ -74,19 +72,23 @@ def search(
     seen_ids: set[int] = set()
 
     if mode in ("fts", "hybrid"):
-        fts_rows = db.search_claims_fts(_conn, q, limit=limit, include_private=include_private)
+        fts_rows = db.search_claims_fts(
+            _conn, q, limit=limit, include_private=include_private
+        )
         for row in fts_rows:
             if row["id"] not in seen_ids:
                 seen_ids.add(row["id"])
-                results.append(SearchResult(
-                    claim_id=row["id"],
-                    text=row["text"],
-                    concept_slug=row["concept_slug"],
-                    confidence=row["confidence"],
-                    status=row["status"],
-                    source_block_ref=row["source_block_ref"],
-                    score_type="fts",
-                ))
+                results.append(
+                    SearchResult(
+                        claim_id=row["id"],
+                        text=row["text"],
+                        concept_slug=row["concept_slug"],
+                        confidence=row["confidence"],
+                        status=row["status"],
+                        source_block_ref=row["source_block_ref"],
+                        score_type="fts",
+                    )
+                )
 
     if mode in ("semantic", "hybrid"):
         try:
@@ -97,15 +99,17 @@ def search(
             for row in sem_rows:
                 if row["id"] not in seen_ids:
                     seen_ids.add(row["id"])
-                    results.append(SearchResult(
-                        claim_id=row["id"],
-                        text=row["text"],
-                        concept_slug=row["concept_slug"],
-                        confidence=row["confidence"],
-                        status=row["status"],
-                        source_block_ref=row["source_block_ref"],
-                        score_type="semantic",
-                    ))
+                    results.append(
+                        SearchResult(
+                            claim_id=row["id"],
+                            text=row["text"],
+                            concept_slug=row["concept_slug"],
+                            confidence=row["confidence"],
+                            status=row["status"],
+                            source_block_ref=row["source_block_ref"],
+                            score_type="semantic",
+                        )
+                    )
         except Exception as e:
             logger.warning("Semantic search failed: %s", e)
 

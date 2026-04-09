@@ -53,10 +53,13 @@ def _unload_all_except(keep_key: str | None = None) -> None:
         del _models[key]
     if keys_to_remove:
         import gc
+
         gc.collect()
 
 
-def _get_model(model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embedding: bool = False) -> Any:
+def _get_model(
+    model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embedding: bool = False
+) -> Any:
     """Get or create a llama-cpp-python model instance.
 
     Only one model is kept in VRAM at a time to fit within GPU memory.
@@ -126,7 +129,9 @@ class LLMClient:
                 manifest = ModelManifest.load(manifest_path)
                 errors = preflight_check(self.config.models_dir, manifest)
                 if errors:
-                    msg = "Model preflight check failed:\n" + "\n".join(f"  - {e}" for e in errors)
+                    msg = "Model preflight check failed:\n" + "\n".join(
+                        f"  - {e}" for e in errors
+                    )
                     raise RuntimeError(msg)
         except FileNotFoundError:
             # No manifest — check files directly by config filenames
@@ -175,7 +180,9 @@ class LLMClient:
         Returns a dict with keys: claims, concepts, entities, related_slugs.
         Each claim has: text, subject, predicate, object, confidence.
         """
-        concept_list = ", ".join(existing_concepts[:50]) if existing_concepts else "none yet"
+        concept_list = (
+            ", ".join(existing_concepts[:50]) if existing_concepts else "none yet"
+        )
 
         prompt = f"""Extract structured knowledge from the following text block.
 
@@ -213,21 +220,32 @@ Rules:
         t0 = time.monotonic()
         response = model.create_chat_completion(
             messages=[
-                {"role": "system", "content": "You are a precise knowledge extraction system. Output ONLY valid JSON."},
+                {
+                    "role": "system",
+                    "content": "You are a precise knowledge extraction system. Output ONLY valid JSON.",
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
             max_tokens=2048,
             response_format={"type": "json_object"},
         )
-        INFERENCE_SECONDS.labels(model_role="enrichment", task="enrich").observe(time.monotonic() - t0)
+        INFERENCE_SECONDS.labels(model_role="enrichment", task="enrich").observe(
+            time.monotonic() - t0
+        )
         usage = response.get("usage", {})
         if usage:
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(usage.get("prompt_tokens", 0))
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="completion").inc(usage.get("completion_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(
+                usage.get("prompt_tokens", 0)
+            )
+            INFERENCE_TOKENS.labels(
+                model_role="enrichment", direction="completion"
+            ).inc(usage.get("completion_tokens", 0))
 
         raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(self.config, prompt, raw, self.config.models.enrichment_model, "enrich")
+        _log_ft_pair(
+            self.config, prompt, raw, self.config.models.enrichment_model, "enrich"
+        )
 
         try:
             return json.loads(raw)
@@ -259,11 +277,17 @@ Return ONLY valid JSON:
             max_tokens=512,
             response_format={"type": "json_object"},
         )
-        INFERENCE_SECONDS.labels(model_role="tagger", task="tag").observe(time.monotonic() - t0)
+        INFERENCE_SECONDS.labels(model_role="tagger", task="tag").observe(
+            time.monotonic() - t0
+        )
         usage = response.get("usage", {})
         if usage:
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(usage.get("prompt_tokens", 0))
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(usage.get("completion_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(
+                usage.get("prompt_tokens", 0)
+            )
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(
+                usage.get("completion_tokens", 0)
+            )
 
         raw = response["choices"][0]["message"]["content"]
         _log_ft_pair(self.config, prompt, raw, self.config.models.tagger_model, "tag")
@@ -279,7 +303,9 @@ Return ONLY valid JSON:
         model = self._embedding_model()
         t0 = time.monotonic()
         result = model.embed(text)
-        INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(time.monotonic() - t0)
+        INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(
+            time.monotonic() - t0
+        )
         # llama-cpp-python returns list or list-of-lists
         if isinstance(result[0], list):
             vec = np.array(result[0], dtype=np.float32)
@@ -292,7 +318,9 @@ Return ONLY valid JSON:
         model = self._embedding_model()
         t0 = time.monotonic()
         results = model.embed(texts)
-        INFERENCE_SECONDS.labels(model_role="embedding", task="embed_batch").observe(time.monotonic() - t0)
+        INFERENCE_SECONDS.labels(model_role="embedding", task="embed_batch").observe(
+            time.monotonic() - t0
+        )
         out = []
         for r in results:
             if isinstance(r, list):
@@ -325,19 +353,34 @@ Output ONLY the new section content (no page frontmatter, no heading).
         t0 = time.monotonic()
         response = model.create_chat_completion(
             messages=[
-                {"role": "system", "content": "You are a wiki maintainer. Write clear, concise markdown."},
+                {
+                    "role": "system",
+                    "content": "You are a wiki maintainer. Write clear, concise markdown.",
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
             max_tokens=1024,
         )
-        INFERENCE_SECONDS.labels(model_role="enrichment", task="wiki_section").observe(time.monotonic() - t0)
+        INFERENCE_SECONDS.labels(model_role="enrichment", task="wiki_section").observe(
+            time.monotonic() - t0
+        )
         usage = response.get("usage", {})
         if usage:
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(usage.get("prompt_tokens", 0))
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="completion").inc(usage.get("completion_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(
+                usage.get("prompt_tokens", 0)
+            )
+            INFERENCE_TOKENS.labels(
+                model_role="enrichment", direction="completion"
+            ).inc(usage.get("completion_tokens", 0))
         raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(self.config, prompt, raw, self.config.models.enrichment_model, "wiki_section")
+        _log_ft_pair(
+            self.config,
+            prompt,
+            raw,
+            self.config.models.enrichment_model,
+            "wiki_section",
+        )
         return raw.strip()
 
     def extract_text_from_image(self, image_path: str) -> str:
@@ -361,15 +404,25 @@ Output ONLY the new section content (no page frontmatter, no heading).
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Describe this image in detail. If it contains text, transcribe all visible text."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                            {
+                                "type": "text",
+                                "text": "Describe this image in detail. If it contains text, transcribe all visible text.",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_b64}"
+                                },
+                            },
                         ],
                     }
                 ],
                 temperature=0.1,
                 max_tokens=2048,
             )
-            INFERENCE_SECONDS.labels(model_role="vision", task="ocr").observe(time.monotonic() - t0)
+            INFERENCE_SECONDS.labels(model_role="vision", task="ocr").observe(
+                time.monotonic() - t0
+            )
             return response["choices"][0]["message"]["content"].strip()
         except Exception as e:
             logger.warning("VLM extraction failed for %s: %s", image_path, e)

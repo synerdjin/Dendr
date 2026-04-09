@@ -15,16 +15,31 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # LogSeq system pages to skip (not user content)
-SYSTEM_PAGES = frozenset({
-    "a", "b", "c", "todo", "done", "doing", "now", "later",
-    "wait", "waiting", "canceled", "cancelled", "in-progress",
-    "favorites", "contents",
-})
+SYSTEM_PAGES = frozenset(
+    {
+        "a",
+        "b",
+        "c",
+        "todo",
+        "done",
+        "doing",
+        "now",
+        "later",
+        "wait",
+        "waiting",
+        "canceled",
+        "cancelled",
+        "in-progress",
+        "favorites",
+        "contents",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
 # EDN metadata parsing
 # ---------------------------------------------------------------------------
+
 
 def parse_pages_metadata(edn_path: Path) -> dict[str, dict[str, datetime]]:
     """Parse logseq/pages-metadata.edn into {page_name: {created, updated}}."""
@@ -34,8 +49,8 @@ def parse_pages_metadata(edn_path: Path) -> dict[str, dict[str, datetime]]:
     # Match each entry block
     for m in re.finditer(
         r':block/name\s+"([^"]+)".*?'
-        r':block/created-at\s+(\d+).*?'
-        r':block/updated-at\s+(\d+)',
+        r":block/created-at\s+(\d+).*?"
+        r":block/updated-at\s+(\d+)",
         text,
         re.DOTALL,
     ):
@@ -50,6 +65,7 @@ def parse_pages_metadata(edn_path: Path) -> dict[str, dict[str, datetime]]:
 # ---------------------------------------------------------------------------
 # Markdown conversion
 # ---------------------------------------------------------------------------
+
 
 def convert_logseq_markdown(text: str) -> str:
     """Convert LogSeq markdown syntax to Obsidian-compatible markdown."""
@@ -124,6 +140,7 @@ def _convert_task_keywords(text: str) -> str:
 # Frontmatter generation
 # ---------------------------------------------------------------------------
 
+
 def _make_frontmatter(**fields: str | None) -> str:
     lines = ["---"]
     for key, val in fields.items():
@@ -137,6 +154,7 @@ def _make_frontmatter(**fields: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Migration orchestrator
 # ---------------------------------------------------------------------------
+
 
 class MigrationResult:
     def __init__(self) -> None:

@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from dendr import db
 from dendr.config import Config
@@ -35,9 +34,7 @@ def _find_orphan_pages(config: Config, conn: sqlite3.Connection) -> list[str]:
     return orphans
 
 
-def _find_stale_claims(
-    config: Config, conn: sqlite3.Connection
-) -> list[sqlite3.Row]:
+def _find_stale_claims(config: Config, conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Find claims not reinforced within the staleness window."""
     cutoff = (datetime.now() - timedelta(weeks=config.stale_claim_weeks)).isoformat()
     return conn.execute(
@@ -73,8 +70,18 @@ def _find_contradictions(conn: sqlite3.Connection) -> list[dict]:
     return [
         {
             "subject_predicate": r["subject_predicate"],
-            "claim_a": {"id": r["id1"], "text": r["text1"], "object": r["obj1"], "confidence": r["conf1"]},
-            "claim_b": {"id": r["id2"], "text": r["text2"], "object": r["obj2"], "confidence": r["conf2"]},
+            "claim_a": {
+                "id": r["id1"],
+                "text": r["text1"],
+                "object": r["obj1"],
+                "confidence": r["conf1"],
+            },
+            "claim_b": {
+                "id": r["id2"],
+                "text": r["text2"],
+                "object": r["obj2"],
+                "confidence": r["conf2"],
+            },
         }
         for r in rows
     ]
@@ -90,6 +97,7 @@ def _find_missing_crossrefs(config: Config, conn: sqlite3.Connection) -> list[st
             content = page_path.read_text(encoding="utf-8")
             # Find [[slug]] references
             import re
+
             refs = re.findall(r"\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]", content)
             for ref in refs:
                 ref_slug = ref.strip().lower().replace(" ", "-")
@@ -136,12 +144,14 @@ def run_lint(config: Config, conn: sqlite3.Connection) -> str:
         report_lines.append("*These need Claude adjudication in the weekly synthesis.*")
         report_lines.append("")
         for c in contradictions:
-            report_lines.extend([
-                f"### `{c['subject_predicate']}`",
-                f"- **A** (id={c['claim_a']['id']}, c={c['claim_a']['confidence']:.2f}): {c['claim_a']['text']}",
-                f"- **B** (id={c['claim_b']['id']}, c={c['claim_b']['confidence']:.2f}): {c['claim_b']['text']}",
-                "",
-            ])
+            report_lines.extend(
+                [
+                    f"### `{c['subject_predicate']}`",
+                    f"- **A** (id={c['claim_a']['id']}, c={c['claim_a']['confidence']:.2f}): {c['claim_a']['text']}",
+                    f"- **B** (id={c['claim_b']['id']}, c={c['claim_b']['confidence']:.2f}): {c['claim_b']['text']}",
+                    "",
+                ]
+            )
     else:
         report_lines.append("None found.")
         report_lines.append("")
@@ -191,7 +201,10 @@ def run_lint(config: Config, conn: sqlite3.Connection) -> str:
 
     logger.info(
         "Lint complete: %d contradictions, %d stale, %d orphans, %d missing refs",
-        len(contradictions), len(stale), len(orphans), len(missing_refs),
+        len(contradictions),
+        len(stale),
+        len(orphans),
+        len(missing_refs),
     )
 
     return report

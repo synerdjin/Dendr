@@ -11,7 +11,6 @@ from dendr.db import (
     find_contradictions,
     find_similar_claim,
     reinforce_claim,
-    challenge_claim,
     supersede_claim,
     upsert_concept,
     append_log,

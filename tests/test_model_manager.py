@@ -7,7 +7,6 @@ import yaml
 
 from dendr.model_manager import (
     ModelManifest,
-    ModelSpec,
     check_all_models,
     lock_models,
     preflight_check,
@@ -19,7 +18,8 @@ def _write_manifest(path: Path, models: dict | None = None) -> Path:
     """Write a test manifest."""
     data = {
         "version": 1,
-        "models": models or {
+        "models": models
+        or {
             "enrichment": {
                 "repo": "test/repo",
                 "filename": "test-model.gguf",
@@ -123,18 +123,21 @@ def test_lock_models():
 
 def test_preflight_hash_mismatch():
     with tempfile.TemporaryDirectory() as td:
-        mp = _write_manifest(Path(td), models={
-            "enrichment": {
-                "repo": "test/repo",
-                "filename": "test-model.gguf",
-                "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "size_bytes": 100,
-                "role": "Test",
-                "context": 4096,
-                "gpu_layers": -1,
-                "gated": False,
-            }
-        })
+        mp = _write_manifest(
+            Path(td),
+            models={
+                "enrichment": {
+                    "repo": "test/repo",
+                    "filename": "test-model.gguf",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "size_bytes": 100,
+                    "role": "Test",
+                    "context": 4096,
+                    "gpu_layers": -1,
+                    "gated": False,
+                }
+            },
+        )
         manifest = ModelManifest.load(mp)
         models_dir = Path(td) / "models"
         models_dir.mkdir()

@@ -7,7 +7,9 @@ from dendr.parser import parse_daily_note, inject_block_ids, get_file_hash
 
 
 def test_parse_empty_note():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write("")
         f.flush()
         blocks = parse_daily_note(Path(f.name))
@@ -15,7 +17,9 @@ def test_parse_empty_note():
 
 
 def test_parse_single_paragraph():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write("This is a test paragraph about machine learning.")
         f.flush()
         blocks = parse_daily_note(Path(f.name))
@@ -33,7 +37,9 @@ Second paragraph about Rust.
 
 - A list item about Go
 """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write(content)
         f.flush()
         blocks = parse_daily_note(Path(f.name))
@@ -42,7 +48,9 @@ Second paragraph about Rust.
 
 def test_parse_existing_block_ref():
     content = "Some text about databases ^my-block-id"
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write(content)
         f.flush()
         blocks = parse_daily_note(Path(f.name))
@@ -52,7 +60,9 @@ def test_parse_existing_block_ref():
 
 def test_parse_attachment_embed():
     content = "![[screenshot.png]]"
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write(content)
         f.flush()
         blocks = parse_daily_note(Path(f.name))
@@ -63,7 +73,9 @@ def test_parse_attachment_embed():
 
 def test_inject_block_ids():
     content = "First paragraph.\n\nSecond paragraph."
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write(content)
         f.flush()
         path = Path(f.name)
@@ -77,7 +89,9 @@ def test_inject_block_ids():
 
 def test_block_hash_stability():
     content = "Stable content for hashing."
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write(content)
         f.flush()
         blocks1 = parse_daily_note(Path(f.name))
@@ -86,7 +100,9 @@ def test_block_hash_stability():
 
 
 def test_file_hash():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
         f.write("test content")
         f.flush()
         h1 = get_file_hash(Path(f.name))

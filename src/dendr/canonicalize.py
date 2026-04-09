@@ -11,10 +11,8 @@ import logging
 import re
 import sqlite3
 
-import numpy as np
-
 from dendr.config import Config
-from dendr.db import find_nearest_concept, get_all_concepts, insert_concept_embedding
+from dendr.db import find_nearest_concept, insert_concept_embedding
 from dendr.llm import LLMClient
 from dendr.metrics import CANONICALIZATION_NEW, CANONICALIZATION_REUSE
 
