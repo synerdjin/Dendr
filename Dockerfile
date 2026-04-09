@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.6.3-devel-ubuntu24.04
+FROM nvidia/cuda:13.2.0-devel-ubuntu24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-dev python3-venv \
