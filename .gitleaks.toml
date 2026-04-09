@@ -1,6 +1,8 @@
 [extend]
 useDefault = true
 
-[[allowlist.paths]]
-description = "Test fixtures contain fake API keys for privacy filter testing"
-regex = '''tests/test_privacy\.py'''
+[allowlist]
+# Test fixtures contain fake API keys for privacy filter testing
+paths = [
+  '''tests/test_privacy\.py''',
+]

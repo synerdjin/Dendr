@@ -457,7 +457,7 @@ def search_claims_semantic(
         q += " AND private = 0"
     q += " LIMIT ?"
     params.append(limit)
-    return conn.execute(q, params).fetchall()
+    return conn.execute(q, params).fetchall()  # nosemgrep: sqlalchemy-execute-raw-query
 
 
 # --- Stats ---
