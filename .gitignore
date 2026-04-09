@@ -25,6 +25,9 @@ env/
 .coverage
 htmlcov/
 
+# Environment
+.env
+
 # OS
 Thumbs.db
 Desktop.ini

@@ -108,6 +108,19 @@ class Config:
         return self.data_dir / "models"
 
     @property
+    def manifest_path(self) -> Path:
+        """Path to dendr-models.yaml (repo root, vault root, or cwd)."""
+        # Check several locations
+        for candidate in [
+            self.vault_path / "dendr-models.yaml",
+            Path.cwd() / "dendr-models.yaml",
+        ]:
+            if candidate.exists():
+                return candidate
+        # Default to cwd even if missing
+        return Path.cwd() / "dendr-models.yaml"
+
+    @property
     def ft_pairs_path(self) -> Path:
         return self.data_dir / "ft-pairs.jsonl"
 

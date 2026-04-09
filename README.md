@@ -40,7 +40,9 @@ pip install -e .
 # 1. Initialize your vault
 dendr init /path/to/your/obsidian/vault
 
-# 2. Download models (see Model Setup below)
+# 2. Download models (requires HF_TOKEN for gated models)
+export HF_TOKEN=hf_your_token_here
+dendr models pull
 
 # 3. Run the daemon (watches Daily/ for changes)
 dendr daemon
@@ -66,17 +68,58 @@ dendr serve
 | `dendr lint` | Run health checks (contradictions, stale claims, orphans) |
 | `dendr serve` | Start search server on `localhost:7777` |
 | `dendr stats` | Show knowledge base statistics |
+| `dendr models pull` | Download all models from manifest |
+| `dendr models pull --role enrichment` | Download one model by role |
+| `dendr models verify` | Check SHA256 integrity of models |
+| `dendr models list` | Show model status table |
+| `dendr models lock` | Pin SHA256 hashes into manifest |
 
 ## Model setup
 
-Download these weights into `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux):
+Models are declared in `dendr-models.yaml` (version-controlled). Download them all with one command:
 
-| Role | Model | Size |
-|------|-------|------|
-| Enrichment | [Phi-4 14B Q4_K_M](https://huggingface.co/microsoft/phi-4-gguf) | ~9 GB |
-| Fast tagger | [Gemma 3 4B Instruct Q4_K_M](https://huggingface.co/google/gemma-3-4b-it-gguf) | ~3 GB |
-| Vision/OCR | [Llama 3.2 Vision 11B Q4_K_M](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct-GGUF) | ~7 GB |
-| Embeddings | [nomic-embed-text-v1.5 Q8_0](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB |
+```bash
+# Set HF token for gated models (Llama 3.2 Vision)
+export HF_TOKEN=hf_your_token_here
+
+# Download all models
+dendr models pull
+
+# Verify integrity
+dendr models verify
+
+# Pin exact hashes for reproducibility (commit the result)
+dendr models lock
+```
+
+| Role | Model | Size | Gated? |
+|------|-------|------|--------|
+| Enrichment | [Phi-4 14B Q4_K_M](https://huggingface.co/microsoft/phi-4-gguf) | ~9 GB | No |
+| Fast tagger | [Gemma 3 4B Instruct Q4_K_M](https://huggingface.co/google/gemma-3-4b-it-gguf) | ~3 GB | No |
+| Vision/OCR | [Llama 3.2 Vision 11B Q4_K_M](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct-GGUF) | ~7 GB | Yes |
+| Embeddings | [nomic-embed-text-v1.5 Q8_0](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | No |
+
+Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux).
+
+## Docker
+
+For reproducible deployment with GPU access:
+
+```bash
+# 1. Copy and fill in environment
+cp .env.example .env
+
+# 2. Download models into the data volume
+docker compose run daemon dendr models pull
+
+# 3. Start daemon + search server
+docker compose up -d
+
+# 4. Check it's working
+curl http://localhost:7777/stats
+```
+
+Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for GPU passthrough.
 
 ## Architecture
 

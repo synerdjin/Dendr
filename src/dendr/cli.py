@@ -8,6 +8,10 @@ Commands:
   dendr lint                 Run lint checks
   dendr serve                Start the search server
   dendr stats                Show knowledge base statistics
+  dendr models pull          Download models from manifest
+  dendr models verify        Verify model integrity
+  dendr models list          Show model status
+  dendr models lock          Pin SHA256 hashes in manifest
 """
 
 from __future__ import annotations
@@ -218,6 +222,158 @@ def stats(data_dir: str | None) -> None:
     click.echo(f"Concepts:          {s['concepts']}")
     click.echo(f"Challenged claims: {s['challenged_claims']}")
     click.echo(f"Pending queue:     {pending}")
+
+
+# --- Model management ---
+
+
+def _find_manifest() -> Path:
+    """Find dendr-models.yaml, searching cwd and up."""
+    check = Path.cwd()
+    for _ in range(10):
+        candidate = check / "dendr-models.yaml"
+        if candidate.exists():
+            return candidate
+        parent = check.parent
+        if parent == check:
+            break
+        check = parent
+    raise click.ClickException(
+        "dendr-models.yaml not found. Are you in the Dendr repo?"
+    )
+
+
+@main.group()
+def models() -> None:
+    """Manage local model weights."""
+
+
+@models.command("pull")
+@click.option("--role", type=str, default=None, help="Download only this role (e.g. enrichment)")
+@click.option("--force", is_flag=True, help="Re-download even if present")
+@click.option("--data-dir", type=click.Path(), default=None)
+def models_pull(role: str | None, force: bool, data_dir: str | None) -> None:
+    """Download models declared in dendr-models.yaml."""
+    import os
+
+    from dendr.config import Config
+    from dendr.model_manager import ModelManifest, pull_all_models
+
+    manifest_path = _find_manifest()
+    manifest = ModelManifest.load(manifest_path)
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    config.models_dir.mkdir(parents=True, exist_ok=True)
+
+    token = os.environ.get("HF_TOKEN")
+    roles = [role] if role else None
+
+    click.echo(f"Manifest: {manifest_path}")
+    click.echo(f"Models dir: {config.models_dir}")
+    if roles:
+        click.echo(f"Pulling role: {role}")
+    else:
+        click.echo(f"Pulling all {len(manifest.specs)} models...")
+
+    results = pull_all_models(
+        config.models_dir, manifest, roles=roles, force=force, token=token
+    )
+
+    click.echo(f"\nDownloaded {len(results)} model(s):")
+    for r, p in results.items():
+        click.echo(f"  [{r}] {p.name} ({p.stat().st_size / 1e9:.1f} GB)")
+
+
+@models.command("verify")
+@click.option("--data-dir", type=click.Path(), default=None)
+def models_verify(data_dir: str | None) -> None:
+    """Verify SHA256 integrity of downloaded models."""
+    from dendr.config import Config
+    from dendr.model_manager import ModelManifest, check_all_models, sha256_file
+
+    manifest_path = _find_manifest()
+    manifest = ModelManifest.load(manifest_path)
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+
+    statuses = check_all_models(config.models_dir, manifest)
+    all_ok = True
+
+    for role, status in statuses.items():
+        if not status.present:
+            click.echo(f"  MISSING  [{role}] {status.spec.filename}")
+            all_ok = False
+        elif status.hash_match is False:
+            actual = sha256_file(config.models_dir / status.spec.filename)
+            click.echo(f"  MISMATCH [{role}] {status.spec.filename}")
+            click.echo(f"           expected: {status.spec.sha256}")
+            click.echo(f"           actual:   {actual}")
+            all_ok = False
+        elif status.hash_match is True:
+            click.echo(f"  OK       [{role}] {status.spec.filename}")
+        else:
+            click.echo(f"  NO HASH  [{role}] {status.spec.filename} (run `dendr models lock` to pin)")
+
+    if all_ok:
+        click.echo("\nAll models verified.")
+    else:
+        click.echo("\nSome models need attention. Run `dendr models pull` to fix.")
+        sys.exit(1)
+
+
+@models.command("list")
+@click.option("--data-dir", type=click.Path(), default=None)
+def models_list(data_dir: str | None) -> None:
+    """Show model status table."""
+    from dendr.config import Config
+    from dendr.model_manager import ModelManifest, check_all_models
+
+    manifest_path = _find_manifest()
+    manifest = ModelManifest.load(manifest_path)
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+
+    statuses = check_all_models(config.models_dir, manifest)
+
+    click.echo(f"{'Role':<14} {'Filename':<42} {'Size':>8} {'Status':<12}")
+    click.echo("-" * 80)
+    for role, status in statuses.items():
+        size_str = f"{status.spec.size_bytes / 1e9:.1f} GB" if status.spec.size_bytes else "?"
+        if not status.present:
+            state = "MISSING"
+        elif status.hash_match is False:
+            state = "MISMATCH"
+        elif status.hash_match is True:
+            state = "OK"
+        else:
+            state = "UNVERIFIED"
+        click.echo(f"{role:<14} {status.spec.filename:<42} {size_str:>8} {state:<12}")
+
+    click.echo(f"\nModels dir: {config.models_dir}")
+
+
+@models.command("lock")
+@click.option("--data-dir", type=click.Path(), default=None)
+def models_lock(data_dir: str | None) -> None:
+    """Compute SHA256 of present models and write to manifest."""
+    from dendr.config import Config
+    from dendr.model_manager import ModelManifest, lock_models
+
+    manifest_path = _find_manifest()
+    manifest = ModelManifest.load(manifest_path)
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+
+    hashes = lock_models(config.models_dir, manifest, manifest_path)
+
+    click.echo(f"Locked {len(hashes)} model(s) in {manifest_path}:")
+    for role, h in hashes.items():
+        click.echo(f"  [{role}] {h[:16]}...")
+    click.echo("\nCommit dendr-models.yaml to pin these versions.")
 
 
 # --- Schema and prompt generation ---

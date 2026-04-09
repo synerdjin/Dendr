@@ -1,0 +1,17 @@
+.git
+.gitignore
+.pytest_cache
+__pycache__
+*.egg-info
+dist
+build
+tests
+*.gguf
+.env
+.venv
+venv
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+ft-pairs.jsonl
+queue/

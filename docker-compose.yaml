@@ -1,0 +1,48 @@
+# Dendr Docker Compose — daemon + search server with GPU access.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in paths
+#   2. docker compose run daemon dendr models pull   # first-time model download
+#   3. docker compose up -d                          # start services
+#
+# Requires: nvidia-container-toolkit (for GPU passthrough)
+
+services:
+  daemon:
+    build: .
+    volumes:
+      - ${VAULT_PATH:?Set VAULT_PATH in .env}:/vault
+      - ${DENDR_DATA:-dendr-data}:/data
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: ["daemon", "--data-dir", "/data"]
+    restart: unless-stopped
+
+  search:
+    build: .
+    ports:
+      - "${SEARCH_PORT:-7777}:7777"
+    volumes:
+      - ${VAULT_PATH:?Set VAULT_PATH in .env}:/vault:ro
+      - ${DENDR_DATA:-dendr-data}:/data
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: ["serve", "--data-dir", "/data"]
+    restart: unless-stopped
+
+volumes:
+  dendr-data:

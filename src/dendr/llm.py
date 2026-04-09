@@ -65,8 +65,41 @@ class LLMClient:
 
     ENRICHMENT_PROMPT_VERSION = "v1"
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
+        if not skip_preflight:
+            self._preflight()
+
+    def _preflight(self) -> None:
+        """Check that required model files exist. Fail fast with actionable message."""
+        try:
+            from dendr.model_manager import ModelManifest, preflight_check
+
+            manifest_path = self.config.manifest_path
+            if manifest_path.exists():
+                manifest = ModelManifest.load(manifest_path)
+                errors = preflight_check(self.config.models_dir, manifest)
+                if errors:
+                    msg = "Model preflight check failed:\n" + "\n".join(f"  - {e}" for e in errors)
+                    raise RuntimeError(msg)
+        except FileNotFoundError:
+            # No manifest — check files directly by config filenames
+            missing = []
+            for name in [
+                self.config.models.enrichment_model,
+                self.config.models.tagger_model,
+                self.config.models.embedding_model,
+            ]:
+                if not (self.config.models_dir / name).exists():
+                    missing.append(name)
+            if missing:
+                msg = (
+                    "Missing model files:\n"
+                    + "\n".join(f"  - {m}" for m in missing)
+                    + f"\n\nPlace them in: {self.config.models_dir}"
+                    + "\nOr run: dendr models pull"
+                )
+                raise RuntimeError(msg)
 
     def _model_path(self, filename: str) -> Path:
         return self.config.models_dir / filename

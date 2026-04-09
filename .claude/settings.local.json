@@ -11,7 +11,9 @@
       "Read(//tmp/test-vault/**)",
       "Bash(python -m dendr stats)",
       "Bash(python -m dendr lint)",
-      "Bash(python -m pytest tests/ -v)"
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m dendr models --help)",
+      "Bash(python -m dendr models list)"
     ]
   }
 }
