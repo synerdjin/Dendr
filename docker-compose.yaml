@@ -22,7 +22,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: ["daemon", "--data-dir", "/data"]
+    command: ["daemon", "--data-dir", "/data", "--vault", "/vault"]
     restart: unless-stopped
 
   search:
@@ -41,7 +41,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: ["serve", "--data-dir", "/data"]
+    command: ["serve", "--data-dir", "/data", "--vault", "/vault"]
     restart: unless-stopped
 
   # --- Monitoring stack ---

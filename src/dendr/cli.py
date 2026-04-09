@@ -102,13 +102,16 @@ def init(vault_path: str) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None, help="Override data directory")
-def daemon(data_dir: str | None) -> None:
+@click.option("--vault", type=click.Path(exists=True, file_okay=False), default=None, help="Override vault path")
+def daemon(data_dir: str | None, vault: str | None) -> None:
     """Run the watcher daemon (blocks until Ctrl-C)."""
     from dendr.config import Config
     from dendr.watcher import run_daemon
 
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
     click.echo(f"Starting daemon for vault: {config.vault_path}")
     run_daemon(config)
 
@@ -213,13 +216,16 @@ def lint(data_dir: str | None) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
-def serve(data_dir: str | None) -> None:
+@click.option("--vault", type=click.Path(exists=True, file_okay=False), default=None, help="Override vault path")
+def serve(data_dir: str | None, vault: str | None) -> None:
     """Start the search HTTP server."""
     from dendr.config import Config
     from dendr.search import run_server
 
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
     click.echo(f"Starting search server on http://127.0.0.1:{config.search_port}")
     run_server(config)
 

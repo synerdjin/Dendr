@@ -44,12 +44,29 @@ def _model_role_from_path(model_path: Path) -> str:
     return "unknown"
 
 
+def _unload_all_except(keep_key: str | None = None) -> None:
+    """Unload all models except the one with the given key to free VRAM."""
+    keys_to_remove = [k for k in _models if k != keep_key]
+    for key in keys_to_remove:
+        role = _model_role_from_path(Path(key))
+        MODEL_LOADED.labels(model_role=role).set(0)
+        del _models[key]
+    if keys_to_remove:
+        import gc
+        gc.collect()
+
+
 def _get_model(model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embedding: bool = False) -> Any:
-    """Get or create a llama-cpp-python model instance."""
+    """Get or create a llama-cpp-python model instance.
+
+    Only one model is kept in VRAM at a time to fit within GPU memory.
+    """
     from llama_cpp import Llama
 
     key = str(model_path)
     if key not in _models:
+        # Unload other models to free VRAM before loading a new one
+        _unload_all_except(None)
         role = _model_role_from_path(model_path)
         logger.info("Loading model: %s (ctx=%d)", model_path.name, n_ctx)
         t0 = time.monotonic()
