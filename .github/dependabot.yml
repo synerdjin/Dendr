@@ -31,3 +31,7 @@ updates:
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
+    ignore:
+      # Only allow patch bumps for CUDA base image — major/minor jumps need manual testing
+      - dependency-name: "nvidia/cuda"
+        update-types: ["version-update:semver-major"]
