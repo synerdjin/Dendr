@@ -13,7 +13,12 @@
       "Bash(python -m dendr lint)",
       "Bash(python -m pytest tests/ -v)",
       "Bash(python -m dendr models --help)",
-      "Bash(python -m dendr models list)"
+      "Bash(python -m dendr models list)",
+      "Bash(python -m dendr migrate-logseq \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\scriptorium\" --vault \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\iCloud~md~obsidian\\\\Dendrite\" -v)",
+      "Bash(python -m dendr -v migrate-logseq \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\scriptorium\" --vault \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\iCloud~md~obsidian\\\\Dendrite\")",
+      "Bash(python -m dendr migrate-logseq \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\scriptorium\" --vault \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\iCloud~md~obsidian\\\\Dendrite\" --execute)",
+      "Bash(python -m dendr init \"C:\\\\Users\\\\genem\\\\iCloudDrive\\\\iCloud~md~obsidian\\\\Dendrite\")",
+      "WebSearch"
     ]
   }
 }

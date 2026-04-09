@@ -23,8 +23,8 @@ class ModelConfig:
     """Local model configuration."""
 
     enrichment_model: str = "phi-4-Q4_K_M.gguf"
-    tagger_model: str = "gemma-3-4b-it-Q4_K_M.gguf"
-    vlm_model: str = "Llama-3.2-11B-Vision-Q4_K_M.gguf"
+    tagger_model: str = "google_gemma-3-4b-it-Q4_K_M.gguf"
+    vlm_model: str = "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf"
     embedding_model: str = "nomic-embed-text-v1.5.Q8_0.gguf"
     # Context sizes
     enrichment_ctx: int = 8192

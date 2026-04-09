@@ -224,6 +224,45 @@ def stats(data_dir: str | None) -> None:
     click.echo(f"Pending queue:     {pending}")
 
 
+# --- LogSeq migration ---
+
+
+@main.command("migrate-logseq")
+@click.argument("logseq_dir", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Obsidian vault path (defaults to configured vault)",
+)
+@click.option("--execute", is_flag=True, help="Actually perform migration (default is dry-run)")
+def migrate_logseq(logseq_dir: str, vault: str | None, execute: bool) -> None:
+    """Migrate a LogSeq vault into Obsidian.
+
+    LOGSEQ_DIR is the path to the LogSeq graph directory (containing journals/, pages/, assets/).
+    """
+    from dendr.migrate_logseq import migrate
+
+    src = Path(logseq_dir).resolve()
+    if vault:
+        dst = Path(vault).resolve()
+    else:
+        from dendr.config import Config
+        config = Config.load(None)
+        dst = config.vault_path
+
+    dry_run = not execute
+    if dry_run:
+        click.echo("=== DRY RUN (pass --execute to write files) ===\n")
+
+    click.echo(f"Source:  {src}")
+    click.echo(f"Target:  {dst}")
+    click.echo()
+
+    result = migrate(src, dst, dry_run=dry_run)
+    click.echo(result.summary())
+
+
 # --- Model management ---
 
 
