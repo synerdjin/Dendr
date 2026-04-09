@@ -44,7 +44,10 @@
       "Read(//c/Users/genem/AppData/Local/Dendr/models/**)",
       "Read(//c/Users/genem/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Local/Dendr/models/**)",
       "Bash(docker compose:*)",
-      "Bash(curl -s http://localhost:9835/metrics)"
+      "Bash(curl -s http://localhost:9835/metrics)",
+      "Bash(docker run:*)",
+      "Bash(docker buildx:*)",
+      "Bash(docker manifest:*)"
     ]
   }
 }
