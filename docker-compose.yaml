@@ -44,5 +44,54 @@ services:
     command: ["serve", "--data-dir", "/data"]
     restart: unless-stopped
 
+  # --- Monitoring stack ---
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-dendr}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.3.0
+    command:
+      - --nvidia-smi-command
+      - nvidia-smi
+      - --query-field-names
+      - uuid,name,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,pstate,clocks.current.sm,clocks.current.memory
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ports:
+      - "9835:9835"
+    restart: unless-stopped
+
 volumes:
   dendr-data:
+  prometheus-data:
+  grafana-data:

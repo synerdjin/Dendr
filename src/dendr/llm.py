@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,11 +16,32 @@ from typing import Any
 import numpy as np
 
 from dendr.config import Config
+from dendr.metrics import (
+    INFERENCE_JSON_FAILURES,
+    INFERENCE_SECONDS,
+    INFERENCE_TOKENS,
+    MODEL_LOAD_SECONDS,
+    MODEL_LOADED,
+)
 
 logger = logging.getLogger(__name__)
 
 # Lazy-loaded model instances
 _models: dict[str, Any] = {}
+
+
+def _model_role_from_path(model_path: Path) -> str:
+    """Derive a short role label from a model filename for metrics."""
+    name = model_path.stem.lower()
+    if "phi" in name:
+        return "enrichment"
+    if "gemma" in name:
+        return "tagger"
+    if "llama" in name and "vision" in name:
+        return "vision"
+    if "nomic" in name or "embed" in name:
+        return "embedding"
+    return "unknown"
 
 
 def _get_model(model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embedding: bool = False) -> Any:
@@ -28,7 +50,9 @@ def _get_model(model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embe
 
     key = str(model_path)
     if key not in _models:
+        role = _model_role_from_path(model_path)
         logger.info("Loading model: %s (ctx=%d)", model_path.name, n_ctx)
+        t0 = time.monotonic()
         _models[key] = Llama(
             model_path=str(model_path),
             n_ctx=n_ctx,
@@ -36,11 +60,16 @@ def _get_model(model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embe
             verbose=False,
             embedding=embedding,
         )
+        MODEL_LOAD_SECONDS.labels(model_role=role).observe(time.monotonic() - t0)
+        MODEL_LOADED.labels(model_role=role).set(1)
     return _models[key]
 
 
 def unload_all() -> None:
     """Release all loaded models."""
+    for key in _models:
+        role = _model_role_from_path(Path(key))
+        MODEL_LOADED.labels(model_role=role).set(0)
     _models.clear()
 
 
@@ -164,6 +193,7 @@ Rules:
 """
 
         model = self._enrichment_model()
+        t0 = time.monotonic()
         response = model.create_chat_completion(
             messages=[
                 {"role": "system", "content": "You are a precise knowledge extraction system. Output ONLY valid JSON."},
@@ -173,6 +203,11 @@ Rules:
             max_tokens=2048,
             response_format={"type": "json_object"},
         )
+        INFERENCE_SECONDS.labels(model_role="enrichment", task="enrich").observe(time.monotonic() - t0)
+        usage = response.get("usage", {})
+        if usage:
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(usage.get("prompt_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="completion").inc(usage.get("completion_tokens", 0))
 
         raw = response["choices"][0]["message"]["content"]
         _log_ft_pair(self.config, prompt, raw, self.config.models.enrichment_model, "enrich")
@@ -180,6 +215,7 @@ Rules:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
+            INFERENCE_JSON_FAILURES.labels(task="enrich").inc()
             logger.warning("Failed to parse enrichment JSON, returning empty result")
             return {"claims": [], "concepts": [], "entities": [], "related_slugs": []}
 
@@ -196,6 +232,7 @@ Return ONLY valid JSON:
 {{"concepts": ["slug-1"], "entities": ["Name"], "is_task": false}}
 """
         model = self._tagger_model()
+        t0 = time.monotonic()
         response = model.create_chat_completion(
             messages=[
                 {"role": "system", "content": "Output ONLY valid JSON."},
@@ -205,6 +242,11 @@ Return ONLY valid JSON:
             max_tokens=512,
             response_format={"type": "json_object"},
         )
+        INFERENCE_SECONDS.labels(model_role="tagger", task="tag").observe(time.monotonic() - t0)
+        usage = response.get("usage", {})
+        if usage:
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(usage.get("prompt_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(usage.get("completion_tokens", 0))
 
         raw = response["choices"][0]["message"]["content"]
         _log_ft_pair(self.config, prompt, raw, self.config.models.tagger_model, "tag")
@@ -212,12 +254,15 @@ Return ONLY valid JSON:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
+            INFERENCE_JSON_FAILURES.labels(task="tag").inc()
             return {"concepts": [], "entities": [], "is_task": False}
 
     def embed(self, text: str) -> np.ndarray:
         """Generate an embedding vector for text."""
         model = self._embedding_model()
+        t0 = time.monotonic()
         result = model.embed(text)
+        INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(time.monotonic() - t0)
         # llama-cpp-python returns list or list-of-lists
         if isinstance(result[0], list):
             vec = np.array(result[0], dtype=np.float32)
@@ -228,7 +273,9 @@ Return ONLY valid JSON:
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Embed multiple texts efficiently."""
         model = self._embedding_model()
+        t0 = time.monotonic()
         results = model.embed(texts)
+        INFERENCE_SECONDS.labels(model_role="embedding", task="embed_batch").observe(time.monotonic() - t0)
         out = []
         for r in results:
             if isinstance(r, list):
@@ -258,6 +305,7 @@ Write a concise new evidence section in markdown. Include:
 Output ONLY the new section content (no page frontmatter, no heading).
 """
         model = self._enrichment_model()
+        t0 = time.monotonic()
         response = model.create_chat_completion(
             messages=[
                 {"role": "system", "content": "You are a wiki maintainer. Write clear, concise markdown."},
@@ -266,6 +314,11 @@ Output ONLY the new section content (no page frontmatter, no heading).
             temperature=0.3,
             max_tokens=1024,
         )
+        INFERENCE_SECONDS.labels(model_role="enrichment", task="wiki_section").observe(time.monotonic() - t0)
+        usage = response.get("usage", {})
+        if usage:
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(usage.get("prompt_tokens", 0))
+            INFERENCE_TOKENS.labels(model_role="enrichment", direction="completion").inc(usage.get("completion_tokens", 0))
         raw = response["choices"][0]["message"]["content"]
         _log_ft_pair(self.config, prompt, raw, self.config.models.enrichment_model, "wiki_section")
         return raw.strip()
@@ -285,6 +338,7 @@ Output ONLY the new section content (no page frontmatter, no heading).
                 self._model_path(self.config.models.vlm_model),
                 n_ctx=self.config.models.vlm_ctx,
             )
+            t0 = time.monotonic()
             response = model.create_chat_completion(
                 messages=[
                     {
@@ -298,6 +352,7 @@ Output ONLY the new section content (no page frontmatter, no heading).
                 temperature=0.1,
                 max_tokens=2048,
             )
+            INFERENCE_SECONDS.labels(model_role="vision", task="ocr").observe(time.monotonic() - t0)
             return response["choices"][0]["message"]["content"].strip()
         except Exception as e:
             logger.warning("VLM extraction failed for %s: %s", image_path, e)

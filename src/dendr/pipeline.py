@@ -8,10 +8,19 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
 from dendr import db, queue
+from dendr.metrics import (
+    BACKPRESSURE_ACTIVE,
+    BLOCKS_PROCESSED,
+    CLAIMS_EXTRACTED,
+    CLAIMS_REINFORCED,
+    CONTRADICTIONS_DETECTED,
+    INGEST_CYCLE_SECONDS,
+)
 from dendr.canonicalize import canonicalize_concepts
 from dendr.config import Config
 from dendr.enrichment import enrich_block
@@ -95,6 +104,8 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     estimated_days = total_pending / 20
     shallow = estimated_days > config.backpressure_days
 
+    BACKPRESSURE_ACTIVE.set(1 if shallow else 0)
+
     if shallow:
         logger.warning(
             "Backpressure: ~%.0f days queued (threshold: %d). Using shallow enrichment.",
@@ -159,6 +170,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                     )
                     if existing:
                         db.reinforce_claim(conn, existing["id"])
+                        CLAIMS_REINFORCED.inc()
                         continue
 
                     # Check for contradictions
@@ -186,6 +198,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                         prompt_version=result.prompt_version,
                     )
                     new_id = db.insert_claim(conn, claim)
+                    CLAIMS_EXTRACTED.inc()
 
                     # Embed the claim
                     try:
@@ -197,6 +210,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                     # Handle contradictions
                     for contra in contradictions:
                         db.challenge_claim(conn, contra["id"])
+                        CONTRADICTIONS_DETECTED.inc()
                         db.append_log(conn, "contradiction", {
                             "new_claim_id": new_id,
                             "challenged_id": contra["id"],
@@ -237,6 +251,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             # Phase 2: mark done (only after successful commit)
             queue.mark_done(config, item.block_id)
             processed += 1
+            BLOCKS_PROCESSED.inc()
 
             # Update existing concepts list for next iteration
             existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
@@ -263,6 +278,7 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
     Returns stats dict.
     """
     logger.info("Starting ingest cycle...")
+    t0 = time.monotonic()
 
     dirty = scan_daily_notes(config, conn)
     queued = queue_dirty_blocks(config, dirty)
@@ -270,6 +286,8 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
 
     processed = process_queue(config, conn, llm)
     logger.info("Processed %d blocks", processed)
+
+    INGEST_CYCLE_SECONDS.observe(time.monotonic() - t0)
 
     return {
         "dirty_blocks": len(dirty),

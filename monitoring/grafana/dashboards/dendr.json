@@ -1,0 +1,411 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "System Status",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "GPU Utilization",
+      "type": "gauge",
+      "targets": [
+        { "expr": "nvidia_smi_utilization_gpu_ratio * 100", "legendFormat": "GPU", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 8000 },
+              { "color": "red", "value": 11000 }
+            ]
+          },
+          "unit": "decmbytes",
+          "max": 12282
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "GPU VRAM Used",
+      "type": "gauge",
+      "targets": [
+        { "expr": "nvidia_smi_memory_used_bytes / 1048576", "legendFormat": "VRAM", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 85 }
+            ]
+          },
+          "unit": "celsius"
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "GPU Temperature",
+      "type": "gauge",
+      "targets": [
+        { "expr": "nvidia_smi_temperature_gpu", "legendFormat": "Temp", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "None" }, "1": { "text": "Loaded" } }, "type": "value" }
+          ]
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "title": "Models Loaded",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_model_loaded", "legendFormat": "{{model_role}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "title": "Queue Pending",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_queue_pending", "legendFormat": "pending", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "options": { "0": { "text": "OFF" }, "1": { "text": "ON" } }, "type": "value" }
+          ]
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 1 },
+      "id": 6,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "title": "Backpressure",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_backpressure_active", "legendFormat": "", "refId": "A" }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 200,
+      "title": "Pipeline Throughput",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+      "id": 7,
+      "options": { "tooltip": { "mode": "single" } },
+      "title": "Blocks Processed / Hour",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_blocks_processed_total[5m]) * 3600", "legendFormat": "blocks/hr", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 8 },
+      "id": 8,
+      "options": { "tooltip": { "mode": "single" } },
+      "title": "Claims Extracted / Hour",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_claims_extracted_total[5m]) * 3600", "legendFormat": "claims/hr", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "id": 9,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Ingest Cycle Duration",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(dendr_ingest_cycle_seconds_bucket[5m]))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(dendr_ingest_cycle_seconds_bucket[5m]))", "legendFormat": "p95", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "id": 10,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Queue Depth Over Time",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "dendr_queue_pending", "legendFormat": "pending", "refId": "A" },
+        { "expr": "dendr_queue_processing", "legendFormat": "processing", "refId": "B" }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 300,
+      "title": "Model Performance",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 17 },
+      "id": 11,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Inference Latency by Model & Task",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(dendr_inference_seconds_bucket[5m]))", "legendFormat": "{{model_role}}/{{task}} p95", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 17 },
+      "id": 12,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Tokens / Second",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_inference_tokens_total[5m])", "legendFormat": "{{model_role}} {{direction}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 4, "x": 16, "y": 17 },
+      "id": 13,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "title": "Model Load Time (last)",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_model_load_seconds_sum / dendr_model_load_seconds_count", "legendFormat": "{{model_role}}", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 17 },
+      "id": 14,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
+      "title": "JSON Parse Failures",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_inference_json_parse_failures_total", "legendFormat": "{{task}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 400,
+      "title": "Knowledge Quality",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 26 },
+      "id": 15,
+      "options": { "tooltip": { "mode": "single" } },
+      "title": "Contradictions Detected / Hour",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_contradictions_detected_total[5m]) * 3600", "legendFormat": "contradictions/hr", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 26 },
+      "id": 16,
+      "options": { "tooltip": { "mode": "single" } },
+      "title": "Canonicalization Reuse Ratio",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_canonicalization_reuse_total[5m]) / (rate(dendr_canonicalization_reuse_total[5m]) + rate(dendr_canonicalization_new_total[5m]))", "legendFormat": "reuse %", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 4, "x": 12, "y": 26 },
+      "id": 17,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "title": "Active Claims",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_active_claims", "legendFormat": "", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 4, "x": 16, "y": 26 },
+      "id": 18,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "title": "Concepts",
+      "type": "stat",
+      "targets": [
+        { "expr": "dendr_concepts_total", "legendFormat": "", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 26 },
+      "id": 19,
+      "options": { "tooltip": { "mode": "single" } },
+      "title": "Claims Reinforced / Hour",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_claims_reinforced_total[5m]) * 3600", "legendFormat": "reinforced/hr", "refId": "A" }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 500,
+      "title": "Search Server",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "id": 20,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Search Latency by Mode",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(dendr_search_request_seconds_bucket[5m]))", "legendFormat": "{{mode}} p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.50, rate(dendr_search_request_seconds_bucket[5m]))", "legendFormat": "{{mode}} p50", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "id": 21,
+      "options": { "tooltip": { "mode": "multi" } },
+      "title": "Search Requests / Minute",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(dendr_search_request_seconds_count[5m]) * 60", "legendFormat": "{{mode}}", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["dendr"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 2,
+        "includeAll": false,
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Dendr",
+  "uid": "dendr-main",
+  "version": 1
+}

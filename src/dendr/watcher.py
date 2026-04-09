@@ -18,6 +18,7 @@ from watchdog.observers import Observer
 from dendr.config import Config
 from dendr.db import connect, init_schema
 from dendr.llm import LLMClient
+from dendr.metrics import collect_db_metrics, collect_queue_metrics, start_metrics_server
 from dendr.pipeline import run_ingest
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,9 @@ def run_daemon(config: Config) -> None:
 
     logger.info("Starting Dendr daemon, watching: %s", daily_dir)
 
+    # Start Prometheus metrics server
+    start_metrics_server(9100)
+
     # Run an initial ingest on startup
     try:
         conn = connect(config.db_path)
@@ -87,6 +91,7 @@ def run_daemon(config: Config) -> None:
         llm = LLMClient(config)
         stats = run_ingest(config, conn, llm)
         logger.info("Startup ingest: %s", stats)
+        collect_db_metrics(conn)
         conn.close()
     except Exception as e:
         logger.error("Startup ingest failed: %s", e, exc_info=True)
@@ -96,9 +101,23 @@ def run_daemon(config: Config) -> None:
     observer.schedule(handler, str(daily_dir), recursive=False)
     observer.start()
 
+    # Periodically collect queue and DB metrics
+    metrics_interval = 30  # seconds
+    last_metrics = 0.0
+
     try:
         while True:
             time.sleep(1)
+            now = time.monotonic()
+            if now - last_metrics >= metrics_interval:
+                last_metrics = now
+                collect_queue_metrics(config)
+                try:
+                    conn = connect(config.db_path)
+                    collect_db_metrics(conn)
+                    conn.close()
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         logger.info("Daemon shutting down...")
         observer.stop()

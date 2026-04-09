@@ -73,6 +73,7 @@ dendr serve
 | `dendr models verify` | Check SHA256 integrity of models |
 | `dendr models list` | Show model status table |
 | `dendr models lock` | Pin SHA256 hashes into manifest |
+| `dendr migrate-logseq <dir>` | Migrate a LogSeq vault to Obsidian (dry-run by default) |
 
 ## Model setup
 
@@ -159,6 +160,73 @@ Wiki pages have two zones: a **human-zone** (your edits, never touched) and an *
 ### Privacy
 
 Blocks containing API keys, passwords, SSNs, or tagged with `#dendr-private` are stored locally but **never sent to Claude**. You can also use `#private` or `#redact` tags.
+
+## LogSeq migration
+
+If you're coming from LogSeq, Dendr can migrate your vault to Obsidian format:
+
+```bash
+# Dry-run first (no files written)
+dendr migrate-logseq /path/to/logseq/graph
+
+# Execute the migration
+dendr migrate-logseq /path/to/logseq/graph --execute
+
+# Target a specific Obsidian vault (defaults to your configured vault)
+dendr migrate-logseq /path/to/logseq/graph --vault /path/to/obsidian/vault --execute
+```
+
+The migration converts:
+- `journals/` entries to `Daily/YYYY-MM-DD.md` with proper date formatting
+- `pages/` to Obsidian-compatible markdown (syntax transformations, wikilinks)
+- `assets/` are copied to `Attachments/`
+- LogSeq-specific syntax (`collapsed::`, `DONE`, block properties) is cleaned up
+- Page metadata (created/updated timestamps) is preserved from `pages-metadata.edn`
+
+## Observability
+
+Dendr includes a Prometheus + Grafana monitoring stack for real-time visibility into the pipeline.
+
+### Quick start
+
+```bash
+# Start the monitoring stack (runs alongside the native daemon)
+docker compose up -d prometheus grafana gpu-exporter
+
+# Access dashboards
+# Grafana:    http://localhost:3000  (no login required)
+# Prometheus: http://localhost:9090
+```
+
+The daemon exposes metrics on `localhost:9100/metrics` and the search server on `localhost:7777/metrics`.
+
+### What's monitored
+
+| Category | Metrics |
+|----------|---------|
+| **Models** | Which model is loaded, load time, inference latency per model+task, tokens/sec |
+| **Pipeline** | Blocks processed/hour, claims extracted, ingest cycle duration, backpressure status |
+| **Knowledge** | Contradiction rate, concept canonicalization reuse ratio, active claims, total concepts |
+| **Search** | Request latency by mode (FTS/semantic/hybrid), requests/minute |
+| **GPU** | Utilization %, VRAM used/free, temperature, power draw, clock speeds |
+
+### Dashboard
+
+A pre-built Grafana dashboard auto-provisions with 5 rows:
+
+1. **Status at a Glance** -- GPU gauges, active model, queue depth, backpressure indicator
+2. **Pipeline Throughput** -- blocks/hour, claims/hour, ingest cycle duration, queue over time
+3. **Model Performance** -- inference latency, tokens/sec, model load times, JSON parse failures
+4. **Knowledge Quality** -- contradictions, canonicalization reuse ratio, claim/concept totals
+5. **Search Server** -- latency by mode, request rate
+
+### Structured logging
+
+Set `DENDR_LOG_JSON=1` to emit JSON-structured log lines (useful in Docker or for log aggregation):
+
+```bash
+DENDR_LOG_JSON=1 dendr daemon
+```
 
 ## Claude Code integration
 

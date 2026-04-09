@@ -16,6 +16,7 @@ import numpy as np
 from dendr.config import Config
 from dendr.db import find_nearest_concept, get_all_concepts, insert_concept_embedding
 from dendr.llm import LLMClient
+from dendr.metrics import CANONICALIZATION_NEW, CANONICALIZATION_REUSE
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +72,13 @@ def canonicalize_concept(
                 existing_slug,
                 similarity,
             )
+            CANONICALIZATION_REUSE.inc()
             return existing_slug
 
     # No match — this is a genuinely new concept. Store its embedding.
     insert_concept_embedding(conn, slug, embedding)
     logger.info("New concept slug: '%s'", slug)
+    CANONICALIZATION_NEW.inc()
     return slug
 
 

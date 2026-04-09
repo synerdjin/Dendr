@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
 from dendr import db
 from dendr.config import Config
 from dendr.llm import LLMClient
+from dendr.metrics import SEARCH_REQUEST_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,12 @@ class ConceptResult(BaseModel):
     page_path: str
 
 
+@app.get("/metrics")
+def metrics() -> Response:
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/search", response_model=SearchResponse)
 def search(
     q: str = Query(..., min_length=1, description="Search query"),
@@ -59,6 +68,7 @@ def search(
 ) -> SearchResponse:
     """Search claims via full-text, semantic, or hybrid."""
     assert _conn is not None and _llm is not None
+    t0 = time.monotonic()
 
     results: list[SearchResult] = []
     seen_ids: set[int] = set()
@@ -99,6 +109,7 @@ def search(
         except Exception as e:
             logger.warning("Semantic search failed: %s", e)
 
+    SEARCH_REQUEST_SECONDS.labels(mode=mode).observe(time.monotonic() - t0)
     return SearchResponse(query=q, results=results[:limit], total=len(results))
 
 

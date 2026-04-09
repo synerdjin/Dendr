@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -26,13 +28,34 @@ import click
 from dendr import __version__
 
 
+class _JsonFormatter(logging.Formatter):
+    """Emit structured JSON log lines for Docker / log aggregation."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            entry["exc"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
+
+
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    if os.environ.get("DENDR_LOG_JSON"):
+        handler = logging.StreamHandler()
+        handler.setFormatter(_JsonFormatter())
+        logging.root.addHandler(handler)
+        logging.root.setLevel(level)
+    else:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
 
 @click.group()
