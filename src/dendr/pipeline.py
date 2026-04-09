@@ -89,6 +89,11 @@ def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
     """Process all pending queue items through the enrichment pipeline.
 
+    Batches work into three phases to minimize GPU model swaps:
+      Phase 1 (enrichment model): extract claims from all blocks
+      Phase 2 (embedding model):  canonicalize concepts + embed claims
+      Phase 3 (enrichment model): generate wiki sections + commit
+
     Returns count of processed items.
     """
     # Recover any items stuck from a prior crash
@@ -100,7 +105,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
     # Check backpressure
     total_pending = len(pending)
-    # Rough estimate: each daily note produces ~20 blocks
     estimated_days = total_pending / 20
     shallow = estimated_days > config.backpressure_days
 
@@ -113,19 +117,24 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             config.backpressure_days,
         )
 
-    # Get existing concept slugs for the enrichment prompts
     existing_concepts = [
         r["slug"] for r in db.get_all_concepts(conn)
     ]
 
-    processed = 0
+    # Claim all items for processing upfront
+    claimed: list[QueueItem] = []
     for item in pending:
-        # Phase 1: claim for processing
-        if not queue.claim_for_processing(config, item.block_id):
-            continue
+        if queue.claim_for_processing(config, item.block_id):
+            claimed.append(item)
 
+    if not claimed:
+        return 0
+
+    # ── Phase 1: Enrichment (enrichment model stays loaded) ──────────
+    logger.info("Phase 1/3: enriching %d blocks", len(claimed))
+    enriched: dict[str, tuple[QueueItem, Block, Any]] = {}
+    for item in claimed:
         try:
-            # Build a Block from the queue item
             block = Block(
                 block_id=item.block_id,
                 source_file=item.source_file,
@@ -137,23 +146,41 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                 attachment_path=item.attachment_path,
                 attachment_type=item.attachment_type,
             )
-
-            # Enrich
             result = enrich_block(block, llm, existing_concepts, shallow=shallow)
+            enriched[item.block_id] = (item, block, result)
+        except Exception as e:
+            logger.error("Failed to enrich block %s: %s", item.block_id, e)
 
-            # Begin transaction
+    # ── Phase 2: Canonicalization & embedding (embedding model stays loaded) ─
+    logger.info("Phase 2/3: canonicalizing & embedding %d blocks", len(enriched))
+    # Per-block: slug_map and pre-computed claim embeddings
+    phase2: dict[str, tuple[QueueItem, Block, Any, dict[str, str], dict[int, Any]]] = {}
+    for block_id, (item, block, result) in enriched.items():
+        try:
+            slug_map = canonicalize_concepts(
+                result.concepts, llm, conn, config
+            )
+
+            claim_embeddings: dict[int, Any] = {}
+            for i, claim_data in enumerate(result.claims):
+                try:
+                    claim_embeddings[i] = llm.embed(claim_data.text)
+                except Exception as e:
+                    logger.warning("Failed to embed claim text: %s", e)
+
+            phase2[block_id] = (item, block, result, slug_map, claim_embeddings)
+        except Exception as e:
+            logger.error("Failed to canonicalize block %s: %s", block_id, e)
+
+    # ── Phase 3: Wiki generation & DB commits (enrichment model stays loaded) ─
+    logger.info("Phase 3/3: writing wiki pages & committing %d blocks", len(phase2))
+    processed = 0
+    for block_id, (item, block, result, slug_map, claim_embeddings) in phase2.items():
+        try:
             conn.execute("BEGIN")
-
             try:
-                # Canonicalize concepts
-                slug_map = canonicalize_concepts(
-                    result.concepts, llm, conn, config
-                )
-
-                # Process each claim
                 source_ref = Path(item.source_file).stem
-                for claim_data in result.claims:
-                    # Determine canonical concept slug for this claim
+                for i, claim_data in enumerate(result.claims):
                     concept_slug = ""
                     for c in claim_data.concepts:
                         if c in slug_map:
@@ -164,7 +191,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
                     sp_key = f"{claim_data.subject}|{claim_data.predicate}"
 
-                    # Check for existing identical claim (reinforce)
                     existing = db.find_similar_claim(
                         conn, sp_key, claim_data.object
                     )
@@ -173,12 +199,10 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                         CLAIMS_REINFORCED.inc()
                         continue
 
-                    # Check for contradictions
                     contradictions = db.find_contradictions(
                         conn, sp_key, claim_data.object
                     )
 
-                    # Insert the new claim
                     claim = Claim(
                         id=None,
                         text=claim_data.text,
@@ -200,14 +224,9 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                     new_id = db.insert_claim(conn, claim)
                     CLAIMS_EXTRACTED.inc()
 
-                    # Embed the claim
-                    try:
-                        emb = llm.embed(claim_data.text)
-                        db.insert_claim_embedding(conn, new_id, emb)
-                    except Exception as e:
-                        logger.warning("Failed to embed claim %d: %s", new_id, e)
+                    if i in claim_embeddings:
+                        db.insert_claim_embedding(conn, new_id, claim_embeddings[i])
 
-                    # Handle contradictions
                     for contra in contradictions:
                         db.challenge_claim(conn, contra["id"])
                         CONTRADICTIONS_DETECTED.inc()
@@ -217,7 +236,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                             "subject_predicate": sp_key,
                         })
 
-                # Ensure concept pages exist and append evidence
                 for candidate, slug in slug_map.items():
                     title = candidate.replace("-", " ").title()
                     evidence = [
@@ -233,7 +251,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                         evidence, source_ref, PageType.CONCEPT,
                     )
 
-                # Record block as processed
                 db.upsert_block_state(
                     conn,
                     item.block_id,
@@ -248,20 +265,17 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                 conn.execute("ROLLBACK")
                 raise
 
-            # Phase 2: mark done (only after successful commit)
             queue.mark_done(config, item.block_id)
             processed += 1
             BLOCKS_PROCESSED.inc()
 
-            # Update existing concepts list for next iteration
-            existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
-
         except Exception as e:
             logger.error("Failed to process block %s: %s", item.block_id, e)
-            # Leave in processing/ — will be recovered on next run
             continue
 
-    # Update index after batch
+    # Update existing concepts list once at end
+    existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
+
     if processed > 0:
         update_index(config, conn)
         append_activity_log(

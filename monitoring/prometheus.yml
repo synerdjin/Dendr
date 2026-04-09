@@ -14,24 +14,24 @@ global:
 
 scrape_configs:
   # --- Native mode (Dendr on host, Prometheus in Docker) ---
-  - job_name: "dendr-daemon"
-    static_configs:
-      - targets: ["host.docker.internal:9100"]
-
-  - job_name: "dendr-search"
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["host.docker.internal:7777"]
-
-  # --- Docker mode (uncomment these, comment out native targets above) ---
   # - job_name: "dendr-daemon"
   #   static_configs:
-  #     - targets: ["daemon:9100"]
+  #     - targets: ["host.docker.internal:9100"]
   #
   # - job_name: "dendr-search"
   #   metrics_path: /metrics
   #   static_configs:
-  #     - targets: ["search:7777"]
+  #     - targets: ["host.docker.internal:7777"]
+
+  # --- Docker mode (Dendr runs in Docker Compose alongside Prometheus) ---
+  - job_name: "dendr-daemon"
+    static_configs:
+      - targets: ["daemon:9100"]
+
+  - job_name: "dendr-search"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["search:7777"]
 
   # --- GPU metrics (nvidia-smi based, works on Windows Docker Desktop) ---
   - job_name: "gpu"

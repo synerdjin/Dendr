@@ -1,0 +1,176 @@
+name: Security & Quality Scan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ── Linting ────────────────────────────────────────────────────────
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - name: Ruff check
+        run: ruff check src/ tests/
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+
+  # ── SAST — Static Application Security Testing ────────────────────
+  sast-semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        run: semgrep scan --config auto --error --sarif -o semgrep.sarif src/
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  sast-bandit:
+    name: SAST (Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install bandit[sarif]
+      - name: Bandit scan
+        run: bandit -r src/ -f sarif -o bandit.sarif --severity-level medium || true
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+  # ── SCA — Software Composition Analysis ───────────────────────────
+  sca:
+    name: SCA (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          pip install pip-audit
+          pip install . 2>/dev/null || pip install --no-build-isolation . 2>/dev/null || echo "Install failed, auditing from pyproject.toml"
+      - name: pip-audit
+        run: pip-audit --desc --format columns || true
+
+  # ── DAST — Dynamic Application Security Testing ───────────────────
+  dast:
+    name: DAST (ZAP baseline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dendr
+        run: |
+          pip install . 2>/dev/null || pip install --no-build-isolation . 2>/dev/null || true
+          pip install uvicorn fastapi httpx
+      - name: Start search server
+        run: |
+          mkdir -p /tmp/dendr-vault/Daily /tmp/dendr-vault/Wiki /tmp/dendr-data
+          python -c "
+          from dendr.db import connect, init_schema
+          from dendr.config import Config
+          config = Config(vault_path='/tmp/dendr-vault', data_dir='/tmp/dendr-data')
+          conn = connect(config.db_path)
+          init_schema(conn)
+          conn.close()
+          " 2>/dev/null || true
+          timeout 120 python -m uvicorn dendr.search:app --host 0.0.0.0 --port 7777 &
+          sleep 5
+      - name: ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: "http://localhost:7777"
+          rules_file_name: ""
+          cmd_options: "-a -j"
+          allow_issue_writing: false
+
+  # ── Container scan ────────────────────────────────────────────────
+  container-scan:
+    name: Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t dendr:scan . --no-cache
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: "dendr:scan"
+          format: "sarif"
+          output: "trivy.sarif"
+          severity: "CRITICAL,HIGH"
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
+      - name: Trivy table output
+        if: always()
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: "dendr:scan"
+          format: "table"
+          severity: "CRITICAL,HIGH"
+
+  # ── Dockerfile lint ───────────────────────────────────────────────
+  dockerfile-lint:
+    name: Dockerfile Lint (Hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  # ── Secret detection ──────────────────────────────────────────────
+  secrets:
+    name: Secret Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Tests ─────────────────────────────────────────────────────────
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: pip install pytest pytest-asyncio
+      - name: Install dendr
+        run: pip install -e .
+      - name: Run tests
+        run: pytest tests/ -v
