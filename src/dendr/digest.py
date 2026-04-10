@@ -51,12 +51,7 @@ class SectionFeedback:
 
 def _render_feedback_block(section_id: str) -> str:
     """Render an empty feedback comment block for a section."""
-    return (
-        f"<!-- feedback:{section_id}\n"
-        f"useful: \n"
-        f"note: \n"
-        f"-->"
-    )
+    return f"<!-- feedback:{section_id}\nuseful: \nnote: \n-->"
 
 
 def parse_feedback(digest_text: str) -> list[SectionFeedback]:
@@ -86,9 +81,13 @@ def parse_feedback(digest_text: str) -> list[SectionFeedback]:
 
         # Only include if user actually wrote something
         if useful is not None or note:
-            results.append(SectionFeedback(
-                section=section, useful=useful, note=note,
-            ))
+            results.append(
+                SectionFeedback(
+                    section=section,
+                    useful=useful,
+                    note=note,
+                )
+            )
 
     return results
 
@@ -110,12 +109,16 @@ def ingest_feedback(
 
     for fb in feedback:
         # Log the rating
-        db.append_log(conn, "digest_feedback", {
-            "section": fb.section,
-            "useful": fb.useful,
-            "note": fb.note,
-            "digest_date": digest_date,
-        })
+        db.append_log(
+            conn,
+            "digest_feedback",
+            {
+                "section": fb.section,
+                "useful": fb.useful,
+                "note": fb.note,
+                "digest_date": digest_date,
+            },
+        )
         logged_ratings += 1
 
         # If there's a free-text note, create a claim from it
@@ -142,9 +145,7 @@ def ingest_feedback(
     return {"ingested_claims": ingested_claims, "logged_ratings": logged_ratings}
 
 
-def get_feedback_history(
-    conn: sqlite3.Connection, limit: int = 20
-) -> list[dict]:
+def get_feedback_history(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     """Get recent digest feedback log entries for synthesis context."""
     rows = conn.execute(
         """
@@ -322,12 +323,10 @@ def render_local_digest(data: dict) -> str:
         for c in data["contradictions"]:
             lines.append(f"### `{c['subject_predicate']}`")
             lines.append(
-                f"- **A** [c:{c['claim_a']['confidence']:.2f}]: "
-                f"{c['claim_a']['text']}"
+                f"- **A** [c:{c['claim_a']['confidence']:.2f}]: {c['claim_a']['text']}"
             )
             lines.append(
-                f"- **B** [c:{c['claim_b']['confidence']:.2f}]: "
-                f"{c['claim_b']['text']}"
+                f"- **B** [c:{c['claim_b']['confidence']:.2f}]: {c['claim_b']['text']}"
             )
             lines.append("- *Was this change intentional?*")
             lines.append("")

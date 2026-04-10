@@ -251,9 +251,7 @@ def serve(data_dir: str | None, vault: str | None) -> None:
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
 @click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
-@click.option(
-    "--claude", is_flag=True, help="Also generate Claude synthesis prompt"
-)
+@click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
 def digest(data_dir: str | None, weeks: int, claude: bool) -> None:
     """Generate a weekly digest briefing."""
     from dendr.config import Config

@@ -114,15 +114,24 @@ def test_get_concept_frequencies():
     since = (now - timedelta(days=7)).isoformat()
 
     for _ in range(3):
-        insert_claim(conn, _make_claim(
-            concept_slug="rust",
+        insert_claim(
+            conn,
+            _make_claim(
+                concept_slug="rust",
+                created_at=now,
+                subject=f"s{_}",
+                subject_predicate=f"s{_}|uses",
+            ),
+        )
+    insert_claim(
+        conn,
+        _make_claim(
+            concept_slug="python",
             created_at=now,
-            subject=f"s{_}", subject_predicate=f"s{_}|uses",
-        ))
-    insert_claim(conn, _make_claim(
-        concept_slug="python", created_at=now,
-        subject="s9", subject_predicate="s9|uses",
-    ))
+            subject="s9",
+            subject_predicate="s9|uses",
+        ),
+    )
 
     freq = get_concept_frequencies(conn, since)
     assert freq[0] == ("rust", 3)
@@ -132,12 +141,20 @@ def test_get_concept_frequencies():
 def test_get_all_contradictions():
     """get_all_contradictions finds conflicting claims."""
     conn = _temp_db()
-    insert_claim(conn, _make_claim(
-        text="X uses Postgres", object="Postgres",
-    ))
-    insert_claim(conn, _make_claim(
-        text="X uses SQLite", object="SQLite",
-    ))
+    insert_claim(
+        conn,
+        _make_claim(
+            text="X uses Postgres",
+            object="Postgres",
+        ),
+    )
+    insert_claim(
+        conn,
+        _make_claim(
+            text="X uses SQLite",
+            object="SQLite",
+        ),
+    )
 
     contras = get_all_contradictions(conn)
     assert len(contras) == 1
@@ -150,19 +167,34 @@ def test_get_dropped_threads():
     conn = _temp_db()
     old = datetime.now() - timedelta(weeks=3)
 
-    insert_claim(conn, _make_claim(
-        concept_slug="forgotten-topic", text="Some note about X",
-        created_at=old,
-    ))
+    insert_claim(
+        conn,
+        _make_claim(
+            concept_slug="forgotten-topic",
+            text="Some note about X",
+            created_at=old,
+        ),
+    )
     # This concept has 2 mentions — should not appear
-    insert_claim(conn, _make_claim(
-        concept_slug="active-topic", text="First mention",
-        created_at=old, subject="a1", subject_predicate="a1|is",
-    ))
-    insert_claim(conn, _make_claim(
-        concept_slug="active-topic", text="Second mention",
-        subject="a2", subject_predicate="a2|is",
-    ))
+    insert_claim(
+        conn,
+        _make_claim(
+            concept_slug="active-topic",
+            text="First mention",
+            created_at=old,
+            subject="a1",
+            subject_predicate="a1|is",
+        ),
+    )
+    insert_claim(
+        conn,
+        _make_claim(
+            concept_slug="active-topic",
+            text="Second mention",
+            subject="a2",
+            subject_predicate="a2|is",
+        ),
+    )
 
     before = (datetime.now() - timedelta(weeks=2)).isoformat()
     dropped = get_dropped_threads(conn, before)
@@ -180,17 +212,25 @@ def test_render_local_digest_with_data():
         "stats": {"active_claims": 42, "concepts": 10, "challenged_claims": 2},
         "recent_claims": [
             {
-                "id": 1, "text": "Test claim", "subject": "X",
-                "predicate": "uses", "object": "Y", "kind": "statement",
-                "concept_slug": "test", "confidence": 0.8,
+                "id": 1,
+                "text": "Test claim",
+                "subject": "X",
+                "predicate": "uses",
+                "object": "Y",
+                "kind": "statement",
+                "concept_slug": "test",
+                "confidence": 0.8,
                 "created_at": datetime.now().isoformat(),
                 "source_block_ref": "block-1",
             },
         ],
         "open_tasks": [
             {
-                "id": 2, "text": "Fix CI", "kind": "task",
-                "concept_slug": "ci", "confidence": 0.7,
+                "id": 2,
+                "text": "Fix CI",
+                "kind": "task",
+                "concept_slug": "ci",
+                "confidence": 0.7,
                 "created_at": datetime.now().isoformat(),
                 "status": "created",
             },
@@ -198,8 +238,20 @@ def test_render_local_digest_with_data():
         "contradictions": [
             {
                 "subject_predicate": "X|uses",
-                "claim_a": {"id": 1, "text": "X uses Postgres", "object": "Postgres", "confidence": 0.8, "created_at": datetime.now().isoformat()},
-                "claim_b": {"id": 2, "text": "X uses SQLite", "object": "SQLite", "confidence": 0.7, "created_at": datetime.now().isoformat()},
+                "claim_a": {
+                    "id": 1,
+                    "text": "X uses Postgres",
+                    "object": "Postgres",
+                    "confidence": 0.8,
+                    "created_at": datetime.now().isoformat(),
+                },
+                "claim_b": {
+                    "id": 2,
+                    "text": "X uses SQLite",
+                    "object": "SQLite",
+                    "confidence": 0.7,
+                    "created_at": datetime.now().isoformat(),
+                },
             },
         ],
         "emerging_themes": [
@@ -207,7 +259,11 @@ def test_render_local_digest_with_data():
             {"concept": "python", "mentions": 1},
         ],
         "dropped_threads": [
-            {"concept_slug": "forgotten", "text": "Something about X", "created_at": (datetime.now() - timedelta(weeks=3)).isoformat()},
+            {
+                "concept_slug": "forgotten",
+                "text": "Something about X",
+                "created_at": (datetime.now() - timedelta(weeks=3)).isoformat(),
+            },
         ],
     }
 
@@ -253,9 +309,14 @@ def test_build_synthesis_prompt():
         "stats": {"active_claims": 5, "concepts": 2, "challenged_claims": 0},
         "recent_claims": [
             {
-                "id": 1, "text": "Test", "subject": "X",
-                "predicate": "is", "object": "Y", "kind": "statement",
-                "concept_slug": "test", "confidence": 0.9,
+                "id": 1,
+                "text": "Test",
+                "subject": "X",
+                "predicate": "is",
+                "object": "Y",
+                "kind": "statement",
+                "concept_slug": "test",
+                "confidence": 0.9,
                 "created_at": datetime.now().isoformat(),
                 "source_block_ref": "b1",
             },
@@ -286,17 +347,25 @@ def test_render_includes_feedback_markers():
         "stats": {"active_claims": 5, "concepts": 2, "challenged_claims": 1},
         "recent_claims": [
             {
-                "id": 1, "text": "Claim", "subject": "X",
-                "predicate": "is", "object": "Y", "kind": "statement",
-                "concept_slug": "test", "confidence": 0.9,
+                "id": 1,
+                "text": "Claim",
+                "subject": "X",
+                "predicate": "is",
+                "object": "Y",
+                "kind": "statement",
+                "concept_slug": "test",
+                "confidence": 0.9,
                 "created_at": datetime.now().isoformat(),
                 "source_block_ref": "b1",
             },
         ],
         "open_tasks": [
             {
-                "id": 2, "text": "Do thing", "kind": "task",
-                "concept_slug": "stuff", "confidence": 0.7,
+                "id": 2,
+                "text": "Do thing",
+                "kind": "task",
+                "concept_slug": "stuff",
+                "confidence": 0.7,
                 "created_at": datetime.now().isoformat(),
                 "status": "created",
             },
@@ -304,13 +373,29 @@ def test_render_includes_feedback_markers():
         "contradictions": [
             {
                 "subject_predicate": "X|uses",
-                "claim_a": {"id": 1, "text": "A", "object": "A", "confidence": 0.8, "created_at": datetime.now().isoformat()},
-                "claim_b": {"id": 2, "text": "B", "object": "B", "confidence": 0.7, "created_at": datetime.now().isoformat()},
+                "claim_a": {
+                    "id": 1,
+                    "text": "A",
+                    "object": "A",
+                    "confidence": 0.8,
+                    "created_at": datetime.now().isoformat(),
+                },
+                "claim_b": {
+                    "id": 2,
+                    "text": "B",
+                    "object": "B",
+                    "confidence": 0.7,
+                    "created_at": datetime.now().isoformat(),
+                },
             },
         ],
         "emerging_themes": [{"concept": "rust", "mentions": 3}],
         "dropped_threads": [
-            {"concept_slug": "old", "text": "Old thing", "created_at": (datetime.now() - timedelta(weeks=3)).isoformat()},
+            {
+                "concept_slug": "old",
+                "text": "Old thing",
+                "created_at": (datetime.now() - timedelta(weeks=3)).isoformat(),
+            },
         ],
     }
 
@@ -408,14 +493,26 @@ def test_ingest_feedback_creates_claims():
 def test_get_feedback_history():
     """get_feedback_history returns recent feedback log entries."""
     conn = _temp_db()
-    append_log(conn, "digest_feedback", {
-        "section": "open-loops", "useful": True,
-        "note": "good stuff", "digest_date": "2026-04-03",
-    })
-    append_log(conn, "digest_feedback", {
-        "section": "contradictions", "useful": False,
-        "note": "", "digest_date": "2026-04-03",
-    })
+    append_log(
+        conn,
+        "digest_feedback",
+        {
+            "section": "open-loops",
+            "useful": True,
+            "note": "good stuff",
+            "digest_date": "2026-04-03",
+        },
+    )
+    append_log(
+        conn,
+        "digest_feedback",
+        {
+            "section": "contradictions",
+            "useful": False,
+            "note": "",
+            "digest_date": "2026-04-03",
+        },
+    )
     append_log(conn, "other_event", {"key": "value"})
 
     history = get_feedback_history(conn)

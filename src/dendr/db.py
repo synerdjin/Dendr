@@ -115,7 +115,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("SELECT kind FROM claims LIMIT 1")
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT NOT NULL DEFAULT 'statement'")
+        conn.execute(
+            "ALTER TABLE claims ADD COLUMN kind TEXT NOT NULL DEFAULT 'statement'"
+        )
 
     # FTS5 virtual table for full-text search over claims
     try:
@@ -561,13 +563,17 @@ def get_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
         {
             "subject_predicate": r["subject_predicate"],
             "claim_a": {
-                "id": r["id1"], "text": r["text1"],
-                "object": r["obj1"], "confidence": r["conf1"],
+                "id": r["id1"],
+                "text": r["text1"],
+                "object": r["obj1"],
+                "confidence": r["conf1"],
                 "created_at": r["created1"],
             },
             "claim_b": {
-                "id": r["id2"], "text": r["text2"],
-                "object": r["obj2"], "confidence": r["conf2"],
+                "id": r["id2"],
+                "text": r["text2"],
+                "object": r["obj2"],
+                "confidence": r["conf2"],
                 "created_at": r["created2"],
             },
         }
