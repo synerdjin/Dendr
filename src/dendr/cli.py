@@ -425,9 +425,7 @@ def migrate_logseq(logseq_dir: str, vault: str | None, execute: bool) -> None:
     default=None,
     help="Obsidian vault path (defaults to configured vault)",
 )
-@click.option(
-    "--dry-run", is_flag=True, help="Show what would change without writing"
-)
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing")
 def reformat_logseq(vault: str | None, dry_run: bool) -> None:
     """Reformat migrated LogSeq notes: top-level bullets become paragraphs.
 
@@ -467,7 +465,9 @@ def reformat_logseq(vault: str | None, dry_run: bool) -> None:
                 else:
                     skipped += 1
 
-    click.echo(f"\n{'Would reformat' if dry_run else 'Reformatted'}: {modified}, skipped: {skipped}")
+    click.echo(
+        f"\n{'Would reformat' if dry_run else 'Reformatted'}: {modified}, skipped: {skipped}"
+    )
 
 
 # --- Model management ---

@@ -219,7 +219,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         except Exception as e:
             logger.error("Failed to annotate block %s: %s", item.block_id, e)
 
-    # ── Phase 2: Embedding + canonicalization ─────────────────────────
+    # ── Phase 2a: Embedding + canonicalization (embedding model) ────────
     total2 = len(annotated)
     logger.info("Phase 2/3: embedding & canonicalizing %d blocks", total2)
 
@@ -228,12 +228,29 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
     for idx2, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
         try:
-            logger.info("Phase 2/3: embedding block %d/%d: %s", idx2, total2, block_id)
+            logger.info(
+                "Phase 2a/3: canonicalizing block %d/%d: %s", idx2, total2, block_id
+            )
             slug_map = canonicalize_concepts(annotation.concepts, llm, conn, config)
             phase2[block_id] = (item, annotation, slug_map)
+        except Exception as e:
+            logger.error("Failed in phase 2a for block %s: %s", block_id, e)
 
-            # Also run enrichment if not in backpressure mode
-            if not shallow:
+    # ── Phase 2b: Enrichment / claim extraction (enrichment model) ───
+    enrichment_results: dict[str, Any] = {}
+    if not shallow:
+        enrich_total = len(phase2)
+        logger.info("Phase 2b/3: enriching %d blocks", enrich_total)
+        for idx2b, (block_id, (item, annotation, slug_map)) in enumerate(
+            phase2.items(), 1
+        ):
+            try:
+                logger.info(
+                    "Phase 2b/3: enriching block %d/%d: %s",
+                    idx2b,
+                    enrich_total,
+                    block_id,
+                )
                 block = Block(
                     block_id=item.block_id,
                     source_file=item.source_file,
@@ -246,16 +263,23 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                     attachment_type=item.attachment_type,
                 )
                 result = enrich_block(block, llm, existing_concepts)
-                # Pre-embed claim texts for semantic dedup
-                claim_embeddings = {}
-                for i, claim_data in enumerate(result.claims):
-                    try:
-                        claim_embeddings[i] = llm.embed(claim_data.text)
-                    except Exception as e:
-                        logger.warning("Failed to embed claim: %s", e)
-                enriched[block_id] = (result, slug_map, claim_embeddings)
-        except Exception as e:
-            logger.error("Failed in phase 2 for block %s: %s", block_id, e)
+                enrichment_results[block_id] = (result, slug_map)
+            except Exception as e:
+                logger.error("Failed in phase 2b for block %s: %s", block_id, e)
+
+    # ── Phase 2c: Embed claims for semantic dedup (embedding model) ──
+    if enrichment_results:
+        logger.info(
+            "Phase 2c/3: embedding claims for %d blocks", len(enrichment_results)
+        )
+        for block_id, (result, slug_map) in enrichment_results.items():
+            claim_embeddings: dict[int, Any] = {}
+            for i, claim_data in enumerate(result.claims):
+                try:
+                    claim_embeddings[i] = llm.embed(claim_data.text)
+                except Exception as e:
+                    logger.warning("Failed to embed claim: %s", e)
+            enriched[block_id] = (result, slug_map, claim_embeddings)
 
     # ── Phase 3: Commit annotations + claims + wiki ───────────────────
     total3 = len(phase2)
