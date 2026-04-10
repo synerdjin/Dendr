@@ -50,38 +50,24 @@ def _find_stale_claims(config: Config, conn: sqlite3.Connection) -> list[sqlite3
 
 
 def _find_contradictions(conn: sqlite3.Connection) -> list[dict]:
-    """Find all active contradictions (challenged claims)."""
+    """Find all challenged claims (contradictions detected by semantic dedup)."""
     rows = conn.execute(
         """
-        SELECT c1.id as id1, c1.text as text1, c1.subject_predicate,
-               c1.object as obj1, c1.confidence as conf1,
-               c2.id as id2, c2.text as text2, c2.object as obj2,
-               c2.confidence as conf2
-        FROM claims c1
-        JOIN claims c2 ON c1.subject_predicate = c2.subject_predicate
-            AND c1.id < c2.id
-            AND c1.object != c2.object
-        WHERE c1.status != 'superseded' AND c2.status != 'superseded'
-        ORDER BY c1.subject_predicate
+        SELECT id, text, concept_slug, confidence, created_at
+        FROM claims
+        WHERE status = 'challenged'
+          AND private = 0
+        ORDER BY created_at DESC
         LIMIT 50
         """
     ).fetchall()
 
     return [
         {
-            "subject_predicate": r["subject_predicate"],
-            "claim_a": {
-                "id": r["id1"],
-                "text": r["text1"],
-                "object": r["obj1"],
-                "confidence": r["conf1"],
-            },
-            "claim_b": {
-                "id": r["id2"],
-                "text": r["text2"],
-                "object": r["obj2"],
-                "confidence": r["conf2"],
-            },
+            "id": r["id"],
+            "text": r["text"],
+            "concept_slug": r["concept_slug"],
+            "confidence": r["confidence"],
         }
         for r in rows
     ]
@@ -144,14 +130,11 @@ def run_lint(config: Config, conn: sqlite3.Connection) -> str:
         report_lines.append("*These need Claude adjudication in the weekly synthesis.*")
         report_lines.append("")
         for c in contradictions:
-            report_lines.extend(
-                [
-                    f"### `{c['subject_predicate']}`",
-                    f"- **A** (id={c['claim_a']['id']}, c={c['claim_a']['confidence']:.2f}): {c['claim_a']['text']}",
-                    f"- **B** (id={c['claim_b']['id']}, c={c['claim_b']['confidence']:.2f}): {c['claim_b']['text']}",
-                    "",
-                ]
+            report_lines.append(
+                f"- (id={c['id']}, c={c['confidence']:.2f}) "
+                f"[{c['concept_slug']}] {c['text']}"
             )
+            report_lines.append("")
     else:
         report_lines.append("None found.")
         report_lines.append("")

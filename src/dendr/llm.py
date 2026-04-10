@@ -112,7 +112,8 @@ def _log_ft_pair(
 class LLMClient:
     """Unified interface to local LLM models."""
 
-    ENRICHMENT_PROMPT_VERSION = "v1"
+    ENRICHMENT_PROMPT_VERSION = "v2"
+    ANNOTATION_PROMPT_VERSION = "v1"
 
     def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
@@ -174,47 +175,139 @@ class LLMClient:
             embedding=True,
         )
 
+    def annotate_block(self, block_text: str) -> dict:
+        """Rich annotation of a block — the primary extraction step.
+
+        Uses the tagger model (fast) to classify block type, emotional signals,
+        life areas, urgency/importance, and extract a one-line gist.
+
+        Returns a dict matching BlockAnnotation fields.
+        """
+        prompt = f"""Annotate this personal daily note block with structured metadata.
+
+TEXT BLOCK:
+{block_text}
+
+Return ONLY valid JSON:
+{{
+  "gist": "one-line summary of what this block is about",
+  "block_type": "reflection|task|decision|question|observation|vent|plan|log_entry",
+  "life_areas": ["work", "health", "relationships", "finance", "learning", "creative", "meta"],
+  "emotional_valence": -1.0 to 1.0,
+  "emotional_labels": ["frustrated", "excited", "anxious", "relieved", "burned_out", "curious", "conflicted", "satisfied", "overwhelmed"],
+  "intensity": 0.0 to 1.0,
+  "urgency": "today|this_week|someday|null",
+  "importance": "high|medium|low|null",
+  "completion_status": "open|done|blocked|abandoned|null",
+  "epistemic_status": "certain|likely|exploring|questioning|venting",
+  "causal_links": ["cause -> effect"],
+  "concepts": ["concept-slug"],
+  "entities": ["entity name"]
+}}
+
+Rules:
+- gist: one sentence, neutral tone, captures the core meaning.
+- block_type: classify the primary purpose of this block.
+- life_areas: which domains does this touch? Include ALL that apply. Leave empty if unclear.
+- emotional_valence: -1.0 = very negative, 0.0 = neutral, 1.0 = very positive.
+- emotional_labels: only include labels that clearly apply. Empty array if neutral.
+- intensity: 0.0 = passing mention, 1.0 = this is a central concern right now.
+- urgency/importance: null if not applicable (e.g. a reflection has no urgency).
+- completion_status: only for tasks/plans. null for reflections/observations.
+- causal_links: extract "X -> Y" relationships if the text states or implies causality.
+- concepts: lowercase slugs with hyphens (e.g. "machine-learning").
+- entities: proper names of people, projects, tools, organizations.
+"""
+
+        model = self._tagger_model()
+        t0 = time.monotonic()
+        response = model.create_chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a personal note analyst. Output ONLY valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=1024,
+            response_format={"type": "json_object"},
+        )
+        INFERENCE_SECONDS.labels(model_role="tagger", task="annotate").observe(
+            time.monotonic() - t0
+        )
+        usage = response.get("usage", {})
+        if usage:
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(
+                usage.get("prompt_tokens", 0)
+            )
+            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(
+                usage.get("completion_tokens", 0)
+            )
+
+        raw = response["choices"][0]["message"]["content"]
+        _log_ft_pair(
+            self.config, prompt, raw, self.config.models.tagger_model, "annotate"
+        )
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            INFERENCE_JSON_FAILURES.labels(task="annotate").inc()
+            logger.warning("Failed to parse annotation JSON, returning defaults")
+            return {
+                "gist": "",
+                "block_type": "observation",
+                "life_areas": [],
+                "emotional_valence": 0.0,
+                "emotional_labels": [],
+                "intensity": 0.5,
+                "urgency": None,
+                "importance": None,
+                "completion_status": None,
+                "epistemic_status": "certain",
+                "causal_links": [],
+                "concepts": [],
+                "entities": [],
+            }
+
     def enrich_block(self, block_text: str, existing_concepts: list[str]) -> dict:
-        """Extract claims, concepts, entities from a text block.
+        """Extract atomic claims from a text block (simplified — no SPO).
 
         Returns a dict with keys: claims, concepts, entities, related_slugs.
-        Each claim has: text, subject, predicate, object, confidence.
+        Each claim has: text, confidence, kind.
         """
         concept_list = (
             ", ".join(existing_concepts[:50]) if existing_concepts else "none yet"
         )
 
-        prompt = f"""Extract structured knowledge from the following text block.
+        prompt = f"""Extract atomic claims from the following text block.
 
 Existing concepts in the knowledge base: [{concept_list}]
 
 TEXT BLOCK:
 {block_text}
 
-Return ONLY valid JSON with this exact schema:
+Return ONLY valid JSON:
 {{
   "claims": [
     {{
-      "text": "atomic factual statement",
-      "subject": "the subject entity",
-      "predicate": "the relationship or property",
-      "object": "the value or target",
+      "text": "one atomic factual statement, task, or intention",
       "confidence": 0.0 to 1.0,
       "kind": "statement|task|intention|question|belief"
     }}
   ],
   "concepts": ["concept-slug-1", "concept-slug-2"],
-  "entities": ["entity name 1", "entity name 2"],
-  "related_slugs": ["existing-concept-slug that relates"]
+  "entities": ["entity name 1"],
+  "related_slugs": ["existing-concept-slug"]
 }}
 
 Rules:
-- Claims must be atomic (one fact each), in SPO form.
+- Each claim must be a single atomic statement in natural language.
 - Confidence: 1.0 = stated as fact, 0.5 = implied, 0.3 = speculative/hedged.
-- Kind: "statement" for facts, "task" for todos/action items, "intention" for plans/goals ("I should...", "I want to..."), "question" for open questions, "belief" for opinions/values.
-- Concept slugs: lowercase, hyphens, no spaces (e.g. "machine-learning").
-- Reuse existing concept slugs when the text refers to an existing concept.
-- If the text is purely conversational with no extractable claims, return empty arrays.
+- Kind: "statement" for facts, "task" for action items, "intention" for goals/plans, "question" for open questions, "belief" for opinions.
+- Concept slugs: lowercase, hyphens (e.g. "machine-learning"). Reuse existing slugs.
+- If the text has no extractable claims, return empty arrays.
 """
 
         model = self._enrichment_model()

@@ -22,6 +22,17 @@ class ClaimKind(str, enum.Enum):
     BELIEF = "belief"
 
 
+class BlockType(str, enum.Enum):
+    REFLECTION = "reflection"
+    TASK = "task"
+    DECISION = "decision"
+    QUESTION = "question"
+    OBSERVATION = "observation"
+    VENT = "vent"
+    PLAN = "plan"
+    LOG_ENTRY = "log_entry"
+
+
 class PageType(str, enum.Enum):
     CONCEPT = "concept"
     ENTITY = "entity"
@@ -45,17 +56,41 @@ class Block:
 
 
 @dataclass
-class ExtractedClaim:
-    """An atomic claim extracted by the local LLM."""
+class BlockAnnotation:
+    """Rich annotation of a block — the primary data artifact for digest/synthesis."""
 
-    text: str
-    subject: str
-    predicate: str
-    object: str
-    confidence: float
+    block_id: str
+    source_file: str
+    source_date: str  # YYYY-MM-DD from filename
+    original_text: str
+    gist: str  # one-line summary
+    block_type: BlockType
+    life_areas: list[str] = field(default_factory=list)
+    emotional_valence: float = 0.0  # -1.0 (distressed) to +1.0 (elated)
+    emotional_labels: list[str] = field(default_factory=list)
+    intensity: float = 0.5  # 0.0 (passing mention) to 1.0 (central concern)
+    urgency: str | None = None  # today, this_week, someday
+    importance: str | None = None  # high, medium, low
+    completion_status: str | None = None  # open, done, blocked, abandoned
+    epistemic_status: str = (
+        "certain"  # certain, likely, exploring, questioning, venting
+    )
+    causal_links: list[str] = field(default_factory=list)
     concepts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
+    private: bool = False
+    model_version: str = ""
+    prompt_version: str = ""
+
+
+@dataclass
+class ExtractedClaim:
+    """An atomic claim extracted by the local LLM (simplified — no SPO)."""
+
+    text: str
+    confidence: float
     kind: ClaimKind = ClaimKind.STATEMENT
+    concepts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,14 +110,10 @@ class EnrichmentResult:
 
 @dataclass
 class Claim:
-    """A persisted claim in the store."""
+    """A persisted claim in the store (simplified — no SPO fields)."""
 
     id: int | None
     text: str
-    subject: str
-    predicate: str
-    object: str
-    subject_predicate: str
     concept_slug: str
     source_block_ref: str
     source_file_hash: str
