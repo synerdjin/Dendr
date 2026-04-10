@@ -436,12 +436,16 @@ EXISTING PAGE CONTENT (LLM zone only):
 NEW EVIDENCE to integrate:
 {evidence_text}
 
-Write a concise new evidence section in markdown. Include:
-- A brief synthesis of what the new evidence adds
-- Inline confidence pills like [c:0.82] after factual claims
-- Cross-references as [[concept-slug]] Obsidian links where relevant
+Summarize ONLY what the evidence above actually says. Rules:
+- Do NOT invent, infer, or add any information not present in the evidence
+- Do NOT speculate about implications, trends, or future developments
+- Stick strictly to the facts stated in the evidence
+- Use inline confidence pills like [c:0.82] after factual claims
+- Use [[concept-slug]] Obsidian links for cross-references when relevant
+- Write plain markdown — no code fences, no ```markdown``` blocks
+- Be concise: 2-4 sentences maximum
 
-Output ONLY the new section content (no page frontmatter, no heading).
+Output ONLY the section content (no page frontmatter, no heading).
 """
         model = self._enrichment_model()
         t0 = time.monotonic()
@@ -449,11 +453,11 @@ Output ONLY the new section content (no page frontmatter, no heading).
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a wiki maintainer. Write clear, concise markdown.",
+                    "content": "You are a wiki maintainer. Summarize ONLY what the evidence says. Never add information beyond what is provided. Write plain markdown, never wrap output in code fences.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
+            temperature=0.1,
             max_tokens=1024,
         )
         INFERENCE_SECONDS.labels(model_role="enrichment", task="wiki_section").observe(

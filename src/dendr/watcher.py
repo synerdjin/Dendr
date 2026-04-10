@@ -83,6 +83,15 @@ def run_daemon(config: Config) -> None:
 
     logger.info("Starting Dendr daemon, watching: %s", daily_dir)
 
+    # Ensure schema.md exists (normally created by `dendr init`)
+    schema_path = config.wiki_dir / "schema.md"
+    if not schema_path.exists():
+        from dendr.cli import _write_default_schema
+
+        config.wiki_dir.mkdir(parents=True, exist_ok=True)
+        _write_default_schema(schema_path)
+        logger.info("Created missing schema.md")
+
     # Start Prometheus metrics server
     start_metrics_server(9100)
 

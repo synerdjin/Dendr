@@ -18,6 +18,12 @@ from dendr.models import Block
 # Obsidian block-ref pattern: text followed by ^identifier at end of line
 _BLOCK_REF_RE = re.compile(r"\s+\^([\w-]+)\s*$")
 
+# YAML frontmatter pattern
+_FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
+
+# Top-level list item (not indented sub-items)
+_TOP_LEVEL_LIST_RE = re.compile(r"^- ")
+
 # Attachment embed patterns: ![[file.pdf]], ![[image.png]], etc.
 _EMBED_RE = re.compile(r"!\[\[([^\]]+)\]\]")
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -45,8 +51,27 @@ def _classify_attachment(filename: str) -> tuple[str, str] | None:
     return None
 
 
+def _strip_frontmatter(text: str) -> tuple[str, int]:
+    """Remove YAML frontmatter from text.
+
+    Returns (stripped_text, number_of_lines_removed).
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        removed = match.group(0)
+        lines_removed = removed.count("\n")
+        return text[match.end() :], lines_removed
+    return text, 0
+
+
 def _split_into_raw_blocks(lines: list[str]) -> list[tuple[int, int, list[str]]]:
-    """Split lines into blocks (groups separated by blank lines or heading boundaries).
+    """Split lines into blocks.
+
+    Block boundaries are:
+    - Blank lines (paragraph separator)
+    - Headings (# starts a new block)
+    - Top-level list items (- at column 0, each becomes its own block;
+      indented continuation lines stay with the parent item)
 
     Returns list of (start_line_0indexed, end_line_0indexed, lines).
     """
@@ -68,6 +93,11 @@ def _split_into_raw_blocks(lines: list[str]) -> list[tuple[int, int, list[str]]]
                 blocks.append((start, i - 1, current_lines))
                 current_lines = []
             start = i + 1
+        # Top-level list item starts a new block
+        elif _TOP_LEVEL_LIST_RE.match(line) and current_lines:
+            blocks.append((start, i - 1, current_lines))
+            current_lines = [line]
+            start = i
         else:
             if not current_lines:
                 start = i
@@ -90,7 +120,11 @@ def parse_daily_note(
     read-only.
     """
     text = file_path.read_text(encoding="utf-8")
-    lines = text.split("\n")
+
+    # Strip YAML frontmatter before block splitting, but track the line
+    # offset so line_start/line_end still reference the original file.
+    stripped_text, fm_lines = _strip_frontmatter(text)
+    lines = stripped_text.split("\n")
     raw_blocks = _split_into_raw_blocks(lines)
     blocks: list[Block] = []
 
@@ -112,6 +146,16 @@ def parse_daily_note(
             block_id = _generate_block_id()
             clean_text = block_text
 
+        # Strip leading `- ` from top-level list items (logseq format)
+        if clean_text.startswith("- "):
+            clean_text = clean_text[2:]
+        elif clean_text == "-":
+            continue  # empty list item, skip
+
+        # Skip blocks with no meaningful content after cleaning
+        if not clean_text.strip():
+            continue
+
         block_hash = _hash_text(clean_text)
 
         # Check if this block is an attachment embed
@@ -132,8 +176,8 @@ def parse_daily_note(
             Block(
                 block_id=block_id,
                 source_file=str(file_path),
-                line_start=start,
-                line_end=end,
+                line_start=start + fm_lines,
+                line_end=end + fm_lines,
                 text=clean_text,
                 block_hash=block_hash,
                 is_attachment_ref=is_attachment,

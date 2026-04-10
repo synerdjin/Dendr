@@ -144,6 +144,86 @@ def ingest(data_dir: str | None) -> None:
 
 
 @main.command()
+@click.option("--data-dir", type=click.Path(), default=None)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path",
+)
+@click.option(
+    "--run", is_flag=True, default=False, help="Immediately run ingest after reset"
+)
+@click.confirmation_option(
+    prompt="This will reset all block state and reprocess everything. Continue?"
+)
+def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
+    """Reset block state and reprocess all daily notes from scratch.
+
+    Clears the block_state table and the done queue so every block is
+    treated as new on the next ingest cycle. Existing claims, concepts,
+    and wiki pages are preserved — blocks that produce identical claims
+    will simply reinforce them.
+    """
+    # TODO: Think through and test reprocess edge cases:
+    #   - LLM non-determinism: same block may produce slightly different claims,
+    #     causing duplicates or false contradictions even with source_block_ref guard
+    #   - Concept evidence duplication: append_evidence adds sections even if
+    #     identical evidence already exists in the LLM zone
+    #   - Entity dedup: no embedding-based canonicalization for entities yet,
+    #     so "Sarah M." and "Sarah" create separate pages
+    #   - Consider adding a --entities-only flag that skips enrichment entirely
+    #     and only runs entity page creation from existing claims in the DB
+    #   - Need integration tests covering the full reprocess flow
+    import shutil
+
+    from dendr.config import Config
+    from dendr.db import connect, init_schema
+    from dendr.llm import LLMClient
+    from dendr.pipeline import run_ingest
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
+
+    conn = connect(config.db_path)
+    init_schema(conn)
+
+    # Clear block state so all blocks appear dirty
+    count = conn.execute("SELECT COUNT(*) as n FROM block_state").fetchone()["n"]
+    conn.execute("DELETE FROM block_state")
+    conn.commit()
+    click.echo(f"Cleared {count} block state entries")
+
+    # Clear done queue
+    done_count = 0
+    if config.done_dir.exists():
+        done_count = len(list(config.done_dir.glob("*.json")))
+        shutil.rmtree(config.done_dir)
+        config.done_dir.mkdir(parents=True, exist_ok=True)
+    click.echo(f"Cleared {done_count} done queue items")
+
+    # Clear processing queue (stale from prior runs)
+    if config.processing_dir.exists():
+        proc_count = len(list(config.processing_dir.glob("*.json")))
+        if proc_count:
+            shutil.rmtree(config.processing_dir)
+            config.processing_dir.mkdir(parents=True, exist_ok=True)
+            click.echo(f"Cleared {proc_count} stale processing items")
+
+    click.echo("Block state reset. All blocks will be reprocessed on next ingest.")
+
+    if run:
+        click.echo("Starting ingest...")
+        llm = LLMClient(config)
+        stats = run_ingest(config, conn, llm)
+        click.echo(json.dumps(stats, indent=2))
+
+    conn.close()
+
+
+@main.command()
 @click.argument("query")
 @click.option(
     "--mode", type=click.Choice(["fts", "semantic", "hybrid"]), default="hybrid"

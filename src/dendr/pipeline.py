@@ -293,8 +293,10 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                                 conn, claim_embeddings[i], similarity_threshold=0.92
                             )
                             if existing:
-                                db.reinforce_claim(conn, existing["id"])
-                                CLAIMS_REINFORCED.inc()
+                                # Only reinforce if evidence comes from a different block
+                                if existing["source_block_ref"] != item.block_id:
+                                    db.reinforce_claim(conn, existing["id"])
+                                    CLAIMS_REINFORCED.inc()
                                 continue
 
                         claim = Claim(
