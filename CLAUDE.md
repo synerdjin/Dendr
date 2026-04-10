@@ -12,6 +12,10 @@ A personal knowledge compiler that watches Obsidian Daily Notes, extracts claims
 # Install (editable)
 pip install -e .
 
+# Lint & format (run before pushing)
+ruff check --fix src/ tests/           # auto-fixes unused imports (F401 only)
+ruff format src/ tests/                # apply formatting
+
 # Run tests
 pytest
 pytest tests/test_parser.py           # single file
@@ -25,6 +29,8 @@ dendr search "query" --mode hybrid
 dendr lint
 dendr serve                           # search server on :7777
 dendr stats
+dendr digest                          # generate weekly briefing
+dendr digest --claude                 # also generate Claude synthesis prompt
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
 
@@ -64,6 +70,7 @@ Daily/*.md  →  parser  →  privacy filter  →  queue (pending/processing/don
 - **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid) and `/metrics` endpoints
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
 - **lint.py** — Health checks: orphan pages, stale claims, contradictions, missing cross-references. Outputs markdown reports to `Wiki/_lint/`
+- **digest.py** — Weekly digest generator. Queries claims for contradictions, open tasks, emerging themes, dropped threads. Renders `Wiki/digest.md` with per-section feedback markers. Parses user feedback from previous digest and ingests it as claims
 - **migrate_logseq.py** — One-shot LogSeq-to-Obsidian vault migration
 
 ### Models
