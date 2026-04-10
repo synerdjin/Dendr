@@ -8,18 +8,31 @@ from dendr.db import (
     connect,
     init_schema,
     insert_claim,
-    find_contradictions,
-    find_similar_claim,
     reinforce_claim,
     supersede_claim,
     upsert_concept,
+    upsert_block_annotation,
+    get_block_annotation,
     append_log,
     search_claims_fts,
     get_stats,
     upsert_block_state,
     get_block_state,
+    get_significant_blocks,
+    get_open_tasks_annotated,
+    get_life_area_distribution,
+    get_emotional_trajectory,
+    upsert_feedback_score,
+    get_section_effectiveness,
 )
-from dendr.models import Claim, ClaimStatus, Concept, PageType
+from dendr.models import (
+    BlockAnnotation,
+    BlockType,
+    Claim,
+    ClaimStatus,
+    Concept,
+    PageType,
+)
 
 
 def _temp_db():
@@ -34,10 +47,6 @@ def _make_claim(**kwargs) -> Claim:
     defaults = dict(
         id=None,
         text="Test claim",
-        subject="X",
-        predicate="uses",
-        object="Y",
-        subject_predicate="X|uses",
         concept_slug="test-concept",
         source_block_ref="block-1",
         source_file_hash="abc123",
@@ -50,25 +59,30 @@ def _make_claim(**kwargs) -> Claim:
     return Claim(**defaults)
 
 
+def _make_annotation(**kwargs) -> BlockAnnotation:
+    defaults = dict(
+        block_id="dendr-test-1",
+        source_file="Daily/2026-04-08.md",
+        source_date="2026-04-08",
+        original_text="Test block content",
+        gist="Test gist",
+        block_type=BlockType.OBSERVATION,
+        life_areas=["work"],
+        emotional_valence=0.0,
+        emotional_labels=[],
+        intensity=0.5,
+        concepts=["test-concept"],
+        entities=[],
+    )
+    defaults.update(kwargs)
+    return BlockAnnotation(**defaults)
+
+
 def test_insert_and_find_claim():
     conn = _temp_db()
     claim = _make_claim()
     claim_id = insert_claim(conn, claim)
     assert claim_id > 0
-
-    found = find_similar_claim(conn, "X|uses", "Y")
-    assert found is not None
-    assert found["text"] == "Test claim"
-
-
-def test_contradiction_detection():
-    conn = _temp_db()
-    c1 = _make_claim(text="X uses Postgres", object="Postgres")
-    id1 = insert_claim(conn, c1)
-
-    contradictions = find_contradictions(conn, "X|uses", "SQLite")
-    assert len(contradictions) == 1
-    assert contradictions[0]["id"] == id1
 
 
 def test_reinforce_claim():
@@ -111,6 +125,7 @@ def test_stats():
     s = get_stats(conn)
     assert s["active_claims"] == 1
     assert s["concepts"] == 0
+    assert s["annotations"] == 0
 
 
 def test_block_state():
@@ -120,7 +135,6 @@ def test_block_state():
     assert state is not None
     assert state["block_hash"] == "hash1"
 
-    # Update
     upsert_block_state(conn, "b1", "daily.md", "hash2", "model1", "v1")
     state = get_block_state(conn, "b1")
     assert state["block_hash"] == "hash2"
@@ -147,3 +161,157 @@ def test_log():
     rows = conn.execute("SELECT * FROM log").fetchall()
     assert len(rows) == 1
     assert rows[0]["kind"] == "test_event"
+
+
+# ── Block annotation tests ───────────────────────────────────────────
+
+
+def test_upsert_block_annotation():
+    conn = _temp_db()
+    ann = _make_annotation()
+    ann_id = upsert_block_annotation(conn, ann)
+    assert ann_id > 0
+
+    retrieved = get_block_annotation(conn, "dendr-test-1")
+    assert retrieved is not None
+    assert retrieved["gist"] == "Test gist"
+    assert retrieved["block_type"] == "observation"
+    assert retrieved["source_date"] == "2026-04-08"
+
+
+def test_upsert_block_annotation_update():
+    conn = _temp_db()
+    ann = _make_annotation(gist="Original gist")
+    upsert_block_annotation(conn, ann)
+
+    ann.gist = "Updated gist"
+    upsert_block_annotation(conn, ann)
+
+    retrieved = get_block_annotation(conn, "dendr-test-1")
+    assert retrieved["gist"] == "Updated gist"
+
+
+def test_annotation_json_fields():
+    conn = _temp_db()
+    ann = _make_annotation(
+        life_areas=["work", "health"],
+        emotional_labels=["frustrated", "anxious"],
+        causal_links=["overwork -> burnout"],
+        concepts=["burnout", "project-x"],
+        entities=["Alice"],
+    )
+    upsert_block_annotation(conn, ann)
+
+    import json
+
+    retrieved = get_block_annotation(conn, "dendr-test-1")
+    assert json.loads(retrieved["life_areas"]) == ["work", "health"]
+    assert json.loads(retrieved["emotional_labels"]) == ["frustrated", "anxious"]
+    assert json.loads(retrieved["causal_links"]) == ["overwork -> burnout"]
+    assert json.loads(retrieved["concepts"]) == ["burnout", "project-x"]
+
+
+def test_get_significant_blocks():
+    conn = _temp_db()
+    # High intensity block
+    upsert_block_annotation(
+        conn,
+        _make_annotation(
+            block_id="high",
+            intensity=0.9,
+            gist="Very important",
+        ),
+    )
+    # Low intensity block
+    upsert_block_annotation(
+        conn,
+        _make_annotation(
+            block_id="low",
+            intensity=0.1,
+            gist="Not important",
+        ),
+    )
+
+    results = get_significant_blocks(conn, "2026-04-01")
+    assert len(results) == 2
+    assert results[0]["block_id"] == "high"  # highest intensity first
+
+
+def test_get_open_tasks_annotated():
+    conn = _temp_db()
+    upsert_block_annotation(
+        conn,
+        _make_annotation(
+            block_id="task1",
+            block_type=BlockType.TASK,
+            completion_status="open",
+            importance="high",
+            gist="Fix CI",
+        ),
+    )
+    upsert_block_annotation(
+        conn,
+        _make_annotation(
+            block_id="done1",
+            block_type=BlockType.TASK,
+            completion_status="done",
+            gist="Done task",
+        ),
+    )
+    upsert_block_annotation(
+        conn,
+        _make_annotation(
+            block_id="obs1",
+            block_type=BlockType.OBSERVATION,
+            gist="Just an observation",
+        ),
+    )
+
+    tasks = get_open_tasks_annotated(conn)
+    assert len(tasks) == 1
+    assert tasks[0]["gist"] == "Fix CI"
+
+
+def test_get_life_area_distribution():
+    conn = _temp_db()
+    upsert_block_annotation(
+        conn,
+        _make_annotation(block_id="b1", life_areas=["work", "health"]),
+    )
+    upsert_block_annotation(
+        conn,
+        _make_annotation(block_id="b2", life_areas=["work"]),
+    )
+
+    dist = get_life_area_distribution(conn, "2026-04-01")
+    assert "work" in dist
+    assert dist["work"] > dist.get("health", 0)
+
+
+def test_get_emotional_trajectory():
+    conn = _temp_db()
+    trajectory = get_emotional_trajectory(conn, weeks=2)
+    assert len(trajectory) == 2
+    for w in trajectory:
+        assert "avg_valence" in w
+        assert "block_count" in w
+
+
+# ── Feedback tests ────────────────────────────────────────────────────
+
+
+def test_feedback_scores():
+    conn = _temp_db()
+    upsert_feedback_score(conn, "2026-04-03", "narrative", True, "good stuff")
+    upsert_feedback_score(conn, "2026-04-03", "open-loops", False, "")
+
+    scores = get_section_effectiveness(conn)
+    assert scores["narrative"] == 1.0
+    assert scores["open-loops"] == 0.0
+
+
+def test_stats_includes_annotations():
+    conn = _temp_db()
+    upsert_block_annotation(conn, _make_annotation())
+    s = get_stats(conn)
+    assert s["annotations"] == 1

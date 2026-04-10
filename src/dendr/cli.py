@@ -531,10 +531,11 @@ Both the local LLM and Claude read this on every session.
 
 Every factual statement is stored as a claim with:
 - `text`: the atomic statement
-- `subject`, `predicate`, `object`: SPO triple
 - `confidence`: 0.0-1.0 (inline as `[c:0.82]` in markdown)
+- `kind`: statement, task, intention, question, belief
 - `status`: created → reinforced → challenged → superseded
 - `source_block_ref`: link back to the daily note block
+- Deduplication via embedding similarity (semantic matching)
 
 ## Conventions
 
@@ -549,7 +550,7 @@ Every factual statement is stored as a claim with:
 
 - Orphan pages: concept pages with zero active claims
 - Stale claims: not reinforced in 8+ weeks
-- Contradictions: same subject+predicate, different object, both non-superseded
+- Contradictions: semantically similar claims with conflicting content
 - Missing cross-refs: `[[slug]]` links pointing to non-existent pages
 
 ## Privacy
