@@ -222,6 +222,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                         updated_at=datetime.now(),
                         confidence=claim_data.confidence,
                         status=ClaimStatus.CREATED,
+                        kind=claim_data.kind,
                         private=block.private,
                         model_version=result.model_version,
                         prompt_version=result.prompt_version,

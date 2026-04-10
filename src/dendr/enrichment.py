@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from dendr.llm import LLMClient
-from dendr.models import Block, EnrichmentResult, ExtractedClaim
+from dendr.models import Block, ClaimKind, EnrichmentResult, ExtractedClaim
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,11 @@ def enrich_block(
 
     for claim_data in raw.get("claims", []):
         try:
+            raw_kind = claim_data.get("kind", "statement")
+            try:
+                kind = ClaimKind(raw_kind)
+            except ValueError:
+                kind = ClaimKind.STATEMENT
             claim = ExtractedClaim(
                 text=claim_data["text"],
                 subject=claim_data.get("subject", ""),
@@ -64,6 +69,7 @@ def enrich_block(
                 confidence=float(claim_data.get("confidence", 0.5)),
                 concepts=claim_data.get("concepts", []),
                 entities=claim_data.get("entities", []),
+                kind=kind,
             )
             result.claims.append(claim)
         except (KeyError, TypeError, ValueError) as e:

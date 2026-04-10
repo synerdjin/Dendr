@@ -14,6 +14,14 @@ class ClaimStatus(str, enum.Enum):
     SUPERSEDED = "superseded"
 
 
+class ClaimKind(str, enum.Enum):
+    STATEMENT = "statement"
+    TASK = "task"
+    INTENTION = "intention"
+    QUESTION = "question"
+    BELIEF = "belief"
+
+
 class PageType(str, enum.Enum):
     CONCEPT = "concept"
     ENTITY = "entity"
@@ -47,6 +55,7 @@ class ExtractedClaim:
     confidence: float
     concepts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
+    kind: ClaimKind = ClaimKind.STATEMENT
 
 
 @dataclass
@@ -81,6 +90,7 @@ class Claim:
     updated_at: datetime
     confidence: float
     status: ClaimStatus
+    kind: ClaimKind = ClaimKind.STATEMENT
     superseded_by: int | None = None
     private: bool = False
     model_version: str = ""
