@@ -29,3 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff.lint]
+# Auto-fix unused imports without human intervention
+fixable = ["F401"]
