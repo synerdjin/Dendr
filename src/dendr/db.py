@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import Claim, Concept
+from dendr.models import Claim, ClaimKind, Concept
 
 # sqlite-vec is loaded as an extension at runtime
 _VEC_LOADED = False
@@ -61,6 +61,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             confidence      REAL NOT NULL DEFAULT 0.5,
             status          TEXT NOT NULL DEFAULT 'created',
             superseded_by   INTEGER REFERENCES claims(id),
+            kind            TEXT NOT NULL DEFAULT 'statement',
             private         INTEGER NOT NULL DEFAULT 0,
             model_version   TEXT NOT NULL DEFAULT '',
             prompt_version  TEXT NOT NULL DEFAULT ''
@@ -74,6 +75,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             ON claims(status);
         CREATE INDEX IF NOT EXISTS idx_claims_block
             ON claims(source_block_ref);
+        CREATE INDEX IF NOT EXISTS idx_claims_kind
+            ON claims(kind);
 
         CREATE TABLE IF NOT EXISTS concepts (
             slug        TEXT PRIMARY KEY,
@@ -107,6 +110,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+    # Migrate: add 'kind' column if upgrading from older schema
+    try:
+        conn.execute("SELECT kind FROM claims LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE claims ADD COLUMN kind TEXT NOT NULL DEFAULT 'statement'")
 
     # FTS5 virtual table for full-text search over claims
     try:
@@ -151,9 +160,9 @@ def insert_claim(conn: sqlite3.Connection, claim: Claim) -> int:
         """
         INSERT INTO claims (text, subject, predicate, object, subject_predicate,
             concept_slug, source_block_ref, source_file_hash,
-            created_at, updated_at, confidence, status, private,
+            created_at, updated_at, confidence, status, kind, private,
             model_version, prompt_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             claim.text,
@@ -168,6 +177,7 @@ def insert_claim(conn: sqlite3.Connection, claim: Claim) -> int:
             now,
             claim.confidence,
             claim.status.value,
+            claim.kind.value,
             int(claim.private),
             claim.model_version,
             claim.prompt_version,
@@ -477,3 +487,107 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "concepts": concepts_count,
         "challenged_claims": challenged,
     }
+
+
+# --- Digest queries ---
+
+
+def get_recent_claims(
+    conn: sqlite3.Connection, since: str, limit: int = 200
+) -> list[sqlite3.Row]:
+    """Get non-superseded claims created after `since` (ISO timestamp)."""
+    return conn.execute(
+        """
+        SELECT * FROM claims
+        WHERE created_at >= ? AND status != 'superseded' AND private = 0
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (since, limit),
+    ).fetchall()
+
+
+def get_open_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Get claims of kind task/intention that are not superseded."""
+    return conn.execute(
+        """
+        SELECT * FROM claims
+        WHERE kind IN ('task', 'intention')
+          AND status NOT IN ('superseded')
+          AND private = 0
+        ORDER BY created_at DESC
+        """,
+    ).fetchall()
+
+
+def get_concept_frequencies(
+    conn: sqlite3.Connection, since: str, limit: int = 20
+) -> list[tuple[str, int]]:
+    """Get concept slugs ranked by claim count since a date."""
+    rows = conn.execute(
+        """
+        SELECT concept_slug, COUNT(*) as n FROM claims
+        WHERE created_at >= ? AND status != 'superseded' AND private = 0
+          AND concept_slug != ''
+        GROUP BY concept_slug
+        ORDER BY n DESC
+        LIMIT ?
+        """,
+        (since, limit),
+    ).fetchall()
+    return [(r["concept_slug"], r["n"]) for r in rows]
+
+
+def get_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
+    """Get all active contradiction pairs (non-superseded, differing objects)."""
+    rows = conn.execute(
+        """
+        SELECT c1.id as id1, c1.text as text1, c1.subject_predicate,
+               c1.object as obj1, c1.confidence as conf1,
+               c1.created_at as created1,
+               c2.id as id2, c2.text as text2, c2.object as obj2,
+               c2.confidence as conf2, c2.created_at as created2
+        FROM claims c1
+        JOIN claims c2 ON c1.subject_predicate = c2.subject_predicate
+            AND c1.id < c2.id
+            AND c1.object != c2.object
+        WHERE c1.status != 'superseded' AND c2.status != 'superseded'
+          AND c1.private = 0 AND c2.private = 0
+        ORDER BY c2.created_at DESC
+        LIMIT 30
+        """
+    ).fetchall()
+    return [
+        {
+            "subject_predicate": r["subject_predicate"],
+            "claim_a": {
+                "id": r["id1"], "text": r["text1"],
+                "object": r["obj1"], "confidence": r["conf1"],
+                "created_at": r["created1"],
+            },
+            "claim_b": {
+                "id": r["id2"], "text": r["text2"],
+                "object": r["obj2"], "confidence": r["conf2"],
+                "created_at": r["created2"],
+            },
+        }
+        for r in rows
+    ]
+
+
+def get_dropped_threads(
+    conn: sqlite3.Connection, mentioned_once_before: str, limit: int = 10
+) -> list[sqlite3.Row]:
+    """Find concepts mentioned exactly once, with that mention before a date."""
+    return conn.execute(
+        """
+        SELECT c.concept_slug, c.text, c.created_at
+        FROM claims c
+        WHERE c.status != 'superseded' AND c.private = 0 AND c.concept_slug != ''
+        GROUP BY c.concept_slug
+        HAVING COUNT(*) = 1 AND MAX(c.created_at) < ?
+        ORDER BY c.created_at DESC
+        LIMIT ?
+        """,
+        (mentioned_once_before, limit),
+    ).fetchall()

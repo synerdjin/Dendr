@@ -199,7 +199,8 @@ Return ONLY valid JSON with this exact schema:
       "subject": "the subject entity",
       "predicate": "the relationship or property",
       "object": "the value or target",
-      "confidence": 0.0 to 1.0
+      "confidence": 0.0 to 1.0,
+      "kind": "statement|task|intention|question|belief"
     }}
   ],
   "concepts": ["concept-slug-1", "concept-slug-2"],
@@ -210,9 +211,9 @@ Return ONLY valid JSON with this exact schema:
 Rules:
 - Claims must be atomic (one fact each), in SPO form.
 - Confidence: 1.0 = stated as fact, 0.5 = implied, 0.3 = speculative/hedged.
+- Kind: "statement" for facts, "task" for todos/action items, "intention" for plans/goals ("I should...", "I want to..."), "question" for open questions, "belief" for opinions/values.
 - Concept slugs: lowercase, hyphens, no spaces (e.g. "machine-learning").
 - Reuse existing concept slugs when the text refers to an existing concept.
-- If the text is a task/todo, extract the intent as a claim with low confidence.
 - If the text is purely conversational with no extractable claims, return empty arrays.
 """
 
