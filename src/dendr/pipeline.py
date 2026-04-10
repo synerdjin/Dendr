@@ -26,7 +26,7 @@ from dendr.canonicalize import canonicalize_concepts
 from dendr.config import Config
 from dendr.enrichment import enrich_block
 from dendr.llm import LLMClient
-from dendr.models import Block, Claim, ClaimKind, ClaimStatus, PageType, QueueItem
+from dendr.models import Block, Claim, ClaimStatus, PageType, QueueItem
 from dendr.parser import inject_block_ids, parse_daily_note
 from dendr.privacy import filter_blocks
 from dendr.wiki import (

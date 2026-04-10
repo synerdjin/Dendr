@@ -16,7 +16,6 @@ from dendr.db import (
 )
 from dendr.db import append_log
 from dendr.digest import (
-    _gather_digest_data,
     build_synthesis_prompt,
     get_feedback_history,
     ingest_feedback,

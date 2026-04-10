@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import Claim, ClaimKind, Concept
+from dendr.models import Claim, Concept
 
 # sqlite-vec is loaded as an extension at runtime
 _VEC_LOADED = False

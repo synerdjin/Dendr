@@ -15,9 +15,8 @@ import json
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from dendr import db
 from dendr.config import Config
