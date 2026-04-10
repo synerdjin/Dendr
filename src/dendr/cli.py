@@ -418,6 +418,58 @@ def migrate_logseq(logseq_dir: str, vault: str | None, execute: bool) -> None:
     click.echo(result.summary())
 
 
+@main.command("reformat-logseq")
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Obsidian vault path (defaults to configured vault)",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show what would change without writing"
+)
+def reformat_logseq(vault: str | None, dry_run: bool) -> None:
+    """Reformat migrated LogSeq notes: top-level bullets become paragraphs.
+
+    Processes both Daily/ and Pages/ directories.
+    """
+    from dendr.migrate_logseq import reformat_logseq_bullets
+
+    if vault:
+        vault_path = Path(vault).resolve()
+    else:
+        from dendr.config import Config
+
+        config = Config.load(None)
+        vault_path = config.vault_path
+
+    dirs = [vault_path / "Daily", vault_path / "Pages"]
+    modified = 0
+    skipped = 0
+
+    for target_dir in dirs:
+        if not target_dir.exists():
+            click.echo(f"  skipping (not found): {target_dir}")
+            continue
+        click.echo(f"Processing {target_dir.name}/")
+        for md_file in sorted(target_dir.glob("*.md")):
+            if dry_run:
+                text = md_file.read_text(encoding="utf-8")
+                if "source: logseq" in text:
+                    click.echo(f"  would reformat: {md_file.name}")
+                    modified += 1
+                else:
+                    skipped += 1
+            else:
+                if reformat_logseq_bullets(md_file):
+                    click.echo(f"  reformatted: {md_file.name}")
+                    modified += 1
+                else:
+                    skipped += 1
+
+    click.echo(f"\n{'Would reformat' if dry_run else 'Reformatted'}: {modified}, skipped: {skipped}")
+
+
 # --- Model management ---
 
 

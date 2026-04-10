@@ -76,7 +76,87 @@ def convert_logseq_markdown(text: str) -> str:
         line = _convert_line(line)
         out_lines.append(line)
 
-    return "\n".join(out_lines)
+    converted = "\n".join(out_lines)
+    return _bullets_to_paragraphs(converted)
+
+
+def _bullets_to_paragraphs(text: str) -> str:
+    """Convert top-level LogSeq bullets to paragraphs, preserving indented lists.
+
+    Top-level ``- text`` becomes ``text`` (plain paragraph).
+    Indented sub-items (tab or spaces + ``- ``) are preserved as markdown
+    list items with normalized 2-space indent.
+    Consecutive top-level paragraphs are separated by blank lines.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    prev_was_content = False  # previous line was a top-level paragraph or sub-item
+
+    for line in lines:
+        # Top-level bullet: starts with "- " at column 0
+        if re.match(r"^- ", line):
+            # Insert blank line between content blocks
+            if prev_was_content and out and out[-1] != "":
+                out.append("")
+            out.append(line[2:])  # strip "- " prefix
+            prev_was_content = True
+        # Indented sub-item: tab or spaces followed by "- "
+        elif re.match(r"^[\t ]+- ", line):
+            # Normalize: count indent depth, convert to 2-space per level
+            stripped = line.lstrip()
+            raw_indent = line[: len(line) - len(stripped)]
+            # Count levels: each tab = 1 level, every 2-4 spaces = 1 level
+            if "\t" in raw_indent:
+                depth = raw_indent.count("\t")
+            else:
+                depth = max(1, len(raw_indent) // 2)
+            out.append("  " * depth + stripped)
+            prev_was_content = True
+        # Empty bullet "- " alone or "- " with only a block ref
+        elif line.strip() == "-":
+            prev_was_content = False
+            continue
+        else:
+            # Non-bullet line (blank, heading, etc.) — pass through
+            if line.strip() == "":
+                prev_was_content = False
+            out.append(line)
+
+    return "\n".join(out)
+
+
+def reformat_logseq_bullets(file_path: Path) -> bool:
+    """Reformat an already-migrated logseq daily note in-place.
+
+    Converts top-level bullets to paragraphs while preserving indented lists
+    and existing block refs (^dendr-xxx). Returns True if the file was modified.
+    """
+    text = file_path.read_text(encoding="utf-8")
+
+    # Only process logseq-sourced files
+    if "source: logseq" not in text:
+        return False
+
+    # Split off frontmatter to avoid mangling it
+    fm_match = _FRONTMATTER_RE.match(text)
+    if fm_match:
+        frontmatter = fm_match.group(0)
+        body = text[fm_match.end() :]
+    else:
+        frontmatter = ""
+        body = text
+
+    converted = _bullets_to_paragraphs(body)
+
+    if converted == body:
+        return False
+
+    file_path.write_text(frontmatter + converted, encoding="utf-8")
+    return True
+
+
+# Reuse the frontmatter regex from parser
+_FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
 
 
 def _convert_line(line: str) -> str:
