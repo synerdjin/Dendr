@@ -8,6 +8,8 @@ from dendr.db import (
     connect,
     init_schema,
     insert_claim,
+    insert_task_event,
+    get_task_lifecycle_stats,
     reinforce_claim,
     supersede_claim,
     upsert_concept,
@@ -308,6 +310,40 @@ def test_feedback_scores():
     scores = get_section_effectiveness(conn)
     assert scores["narrative"] == 1.0
     assert scores["open-loops"] == 0.0
+
+
+# ── Task lifecycle tests ──────────────────────────────────────────────
+
+
+def test_task_lifecycle_stats_empty():
+    conn = _temp_db()
+    stats = get_task_lifecycle_stats(conn)
+    assert stats["total_created"] == 0
+    assert stats["completion_rate"] == 0.0
+
+
+def test_task_lifecycle_created_and_completed():
+    conn = _temp_db()
+    insert_task_event(conn, "task-1", "created", "2026-04-01")
+    insert_task_event(conn, "task-2", "created", "2026-04-02")
+    insert_task_event(conn, "task-1", "completed", "2026-04-05")
+
+    stats = get_task_lifecycle_stats(conn)
+    assert stats["total_created"] == 2
+    assert stats["total_completed"] == 1
+    assert stats["completion_rate"] == 0.5
+    assert stats["avg_days_to_completion"] == 4.0
+
+
+def test_task_lifecycle_abandoned():
+    conn = _temp_db()
+    insert_task_event(conn, "task-1", "created", "2026-04-01")
+    insert_task_event(conn, "task-1", "abandoned", "2026-04-10")
+
+    stats = get_task_lifecycle_stats(conn)
+    assert stats["total_abandoned"] == 1
+    assert stats["total_completed"] == 0
+    assert stats["completion_rate"] == 0.0
 
 
 def test_stats_includes_annotations():

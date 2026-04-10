@@ -157,6 +157,7 @@ def _gather_digest_data(
             _annotation_to_dict(r) for r in db.get_completed_tasks(conn, since)
         ],
         "stale_tasks": [_annotation_to_dict(r) for r in db.get_stale_tasks(conn)],
+        "task_lifecycle": db.get_task_lifecycle_stats(conn),
     }
 
     # Layer 3: Claim-level data
@@ -407,6 +408,23 @@ def render_local_digest(data: dict) -> str:
         lines.append("")
         for c in completed[:10]:
             lines.append(f"- ~~{c['gist']}~~ ({c['source_date']})")
+        lines.append("")
+
+    # Task lifecycle stats
+    lifecycle = data["patterns"].get("task_lifecycle", {})
+    if lifecycle.get("total_created", 0) > 0:
+        lines.append("## Task Lifecycle")
+        lines.append("")
+        lines.append(
+            f"- **Created:** {lifecycle['total_created']} | "
+            f"**Completed:** {lifecycle['total_completed']} | "
+            f"**Abandoned:** {lifecycle['total_abandoned']}"
+        )
+        lines.append(f"- **Completion rate:** {lifecycle['completion_rate']:.0%}")
+        if lifecycle.get("avg_days_to_completion", 0) > 0:
+            lines.append(
+                f"- **Avg days to completion:** {lifecycle['avg_days_to_completion']}"
+            )
         lines.append("")
 
     if not has_content:

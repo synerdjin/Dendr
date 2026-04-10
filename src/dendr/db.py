@@ -156,6 +156,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at  TEXT NOT NULL,
             UNIQUE(digest_date, section)
         );
+
+        CREATE TABLE IF NOT EXISTS task_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            block_id        TEXT NOT NULL,
+            event_type      TEXT NOT NULL,
+            source_date     TEXT NOT NULL,
+            created_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_events_block
+            ON task_events(block_id);
+        CREATE INDEX IF NOT EXISTS idx_task_events_type
+            ON task_events(event_type);
         """
     )
 
@@ -590,6 +603,67 @@ def get_section_effectiveness(
     return {
         r["section"]: r["yes_count"] / r["total"] if r["total"] > 0 else 0.5
         for r in rows
+    }
+
+
+# ── Task lifecycle operations ─────────────────────────────────────────
+
+
+def insert_task_event(
+    conn: sqlite3.Connection,
+    block_id: str,
+    event_type: str,
+    source_date: str,
+) -> None:
+    """Record a task lifecycle event (created, completed, abandoned, mentioned)."""
+    conn.execute(
+        """
+        INSERT INTO task_events (block_id, event_type, source_date, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (block_id, event_type, source_date, datetime.now().isoformat()),
+    )
+
+
+def get_task_lifecycle_stats(conn: sqlite3.Connection) -> dict:
+    """Compute task lifecycle statistics from task_events."""
+    total_created = conn.execute(
+        "SELECT COUNT(DISTINCT block_id) as n FROM task_events WHERE event_type = 'created'"
+    ).fetchone()["n"]
+    total_completed = conn.execute(
+        "SELECT COUNT(DISTINCT block_id) as n FROM task_events WHERE event_type = 'completed'"
+    ).fetchone()["n"]
+    total_abandoned = conn.execute(
+        "SELECT COUNT(DISTINCT block_id) as n FROM task_events WHERE event_type = 'abandoned'"
+    ).fetchone()["n"]
+
+    completion_rate = (
+        round(total_completed / total_created, 2) if total_created > 0 else 0.0
+    )
+
+    # Average days to completion
+    avg_days_rows = conn.execute(
+        """
+        SELECT te_done.block_id,
+               julianday(te_done.source_date) - julianday(te_created.source_date) as days
+        FROM task_events te_done
+        JOIN task_events te_created ON te_done.block_id = te_created.block_id
+        WHERE te_done.event_type = 'completed'
+          AND te_created.event_type = 'created'
+        """
+    ).fetchall()
+    avg_days = (
+        round(sum(r["days"] for r in avg_days_rows) / len(avg_days_rows), 1)
+        if avg_days_rows
+        else 0.0
+    )
+
+    return {
+        "total_created": total_created,
+        "total_completed": total_completed,
+        "total_abandoned": total_abandoned,
+        "completion_rate": completion_rate,
+        "avg_days_to_completion": avg_days,
     }
 
 

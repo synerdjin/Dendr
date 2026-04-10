@@ -133,6 +133,39 @@ def _build_annotation(
     )
 
 
+def _track_task_lifecycle(
+    conn: sqlite3.Connection, annotation: BlockAnnotation
+) -> None:
+    """Detect task status transitions and log lifecycle events.
+
+    Compares the new annotation against any existing annotation for the same
+    block_id. If completion_status changed (e.g. open -> done), log it.
+    If this is a new task/plan block, log a 'created' event.
+    """
+    if annotation.block_type.value not in ("task", "plan"):
+        return
+
+    existing = db.get_block_annotation(conn, annotation.block_id)
+    new_status = annotation.completion_status
+    source_date = annotation.source_date
+
+    if existing is None:
+        # New task — log creation
+        if new_status in (None, "open"):
+            db.insert_task_event(conn, annotation.block_id, "created", source_date)
+    else:
+        old_status = existing["completion_status"]
+        if old_status == new_status:
+            return
+        # Status changed
+        if new_status == "done":
+            db.insert_task_event(conn, annotation.block_id, "completed", source_date)
+        elif new_status == "abandoned":
+            db.insert_task_event(conn, annotation.block_id, "abandoned", source_date)
+        elif new_status == "blocked":
+            db.insert_task_event(conn, annotation.block_id, "blocked", source_date)
+
+
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
     """Process all pending queue items through the annotation + enrichment pipeline.
 
@@ -233,6 +266,9 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         try:
             conn.execute("BEGIN")
             try:
+                # Track task lifecycle before upserting
+                _track_task_lifecycle(conn, annotation)
+
                 # Store annotation
                 db.upsert_block_annotation(conn, annotation)
 
