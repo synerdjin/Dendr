@@ -14,10 +14,15 @@ from dendr.db import (
     get_all_contradictions,
     get_dropped_threads,
 )
+from dendr.db import append_log
 from dendr.digest import (
     _gather_digest_data,
     build_synthesis_prompt,
+    get_feedback_history,
+    ingest_feedback,
+    parse_feedback,
     render_local_digest,
+    SectionFeedback,
 )
 from dendr.models import Claim, ClaimKind, ClaimStatus
 
@@ -268,3 +273,177 @@ def test_build_synthesis_prompt():
     assert "Contradictions" in prompt
     assert "Open Loops" in prompt
     assert "Reframes" in prompt
+
+
+# --- Feedback tests ---
+
+
+def test_render_includes_feedback_markers():
+    """render_local_digest includes feedback comment blocks in each section."""
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).isoformat(),
+        "period_end": datetime.now().isoformat(),
+        "stats": {"active_claims": 5, "concepts": 2, "challenged_claims": 1},
+        "recent_claims": [
+            {
+                "id": 1, "text": "Claim", "subject": "X",
+                "predicate": "is", "object": "Y", "kind": "statement",
+                "concept_slug": "test", "confidence": 0.9,
+                "created_at": datetime.now().isoformat(),
+                "source_block_ref": "b1",
+            },
+        ],
+        "open_tasks": [
+            {
+                "id": 2, "text": "Do thing", "kind": "task",
+                "concept_slug": "stuff", "confidence": 0.7,
+                "created_at": datetime.now().isoformat(),
+                "status": "created",
+            },
+        ],
+        "contradictions": [
+            {
+                "subject_predicate": "X|uses",
+                "claim_a": {"id": 1, "text": "A", "object": "A", "confidence": 0.8, "created_at": datetime.now().isoformat()},
+                "claim_b": {"id": 2, "text": "B", "object": "B", "confidence": 0.7, "created_at": datetime.now().isoformat()},
+            },
+        ],
+        "emerging_themes": [{"concept": "rust", "mentions": 3}],
+        "dropped_threads": [
+            {"concept_slug": "old", "text": "Old thing", "created_at": (datetime.now() - timedelta(weeks=3)).isoformat()},
+        ],
+    }
+
+    result = render_local_digest(data)
+    assert "<!-- feedback:contradictions" in result
+    assert "<!-- feedback:open-loops" in result
+    assert "<!-- feedback:emerging-themes" in result
+    assert "<!-- feedback:dropped-threads" in result
+    assert "<!-- feedback:activity" in result
+
+
+def test_parse_feedback_filled():
+    """parse_feedback extracts user responses from comment blocks."""
+    text = """## Open Loops
+- stuff
+
+<!-- feedback:open-loops
+useful: yes
+note: CI is done, remove it
+-->
+
+## Dropped Threads
+
+<!-- feedback:dropped-threads
+useful: no
+note:
+-->
+"""
+    feedback = parse_feedback(text)
+    assert len(feedback) == 2
+
+    ol = next(f for f in feedback if f.section == "open-loops")
+    assert ol.useful is True
+    assert ol.note == "CI is done, remove it"
+
+    dt = next(f for f in feedback if f.section == "dropped-threads")
+    assert dt.useful is False
+    assert dt.note == ""
+
+
+def test_parse_feedback_empty():
+    """parse_feedback ignores untouched feedback blocks."""
+    text = """## Open Loops
+- stuff
+
+<!-- feedback:open-loops
+useful:
+note:
+-->
+"""
+    feedback = parse_feedback(text)
+    assert len(feedback) == 0
+
+
+def test_parse_feedback_note_only():
+    """parse_feedback accepts blocks with just a note (no useful rating)."""
+    text = """<!-- feedback:contradictions
+useful:
+note: both are true actually, different contexts
+-->"""
+    feedback = parse_feedback(text)
+    assert len(feedback) == 1
+    assert feedback[0].section == "contradictions"
+    assert feedback[0].useful is None
+    assert "both are true" in feedback[0].note
+
+
+def test_ingest_feedback_creates_claims():
+    """ingest_feedback stores notes as claims and logs ratings."""
+    conn = _temp_db()
+    feedback = [
+        SectionFeedback(section="open-loops", useful=True, note="CI task is done"),
+        SectionFeedback(section="contradictions", useful=False, note=""),
+    ]
+
+    stats = ingest_feedback(conn, feedback, "2026-04-10")
+    assert stats["logged_ratings"] == 2
+    assert stats["ingested_claims"] == 1  # only "CI task is done" has a note
+
+    # Verify the claim was created
+    rows = conn.execute(
+        "SELECT * FROM claims WHERE source_block_ref LIKE 'digest-feedback%'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["text"] == "CI task is done"
+    assert rows[0]["confidence"] == 0.9
+
+    # Verify log entries
+    log_rows = conn.execute(
+        "SELECT * FROM log WHERE kind = 'digest_feedback'"
+    ).fetchall()
+    assert len(log_rows) == 2
+
+
+def test_get_feedback_history():
+    """get_feedback_history returns recent feedback log entries."""
+    conn = _temp_db()
+    append_log(conn, "digest_feedback", {
+        "section": "open-loops", "useful": True,
+        "note": "good stuff", "digest_date": "2026-04-03",
+    })
+    append_log(conn, "digest_feedback", {
+        "section": "contradictions", "useful": False,
+        "note": "", "digest_date": "2026-04-03",
+    })
+    append_log(conn, "other_event", {"key": "value"})
+
+    history = get_feedback_history(conn)
+    assert len(history) == 2
+    sections = {h["section"] for h in history}
+    assert "open-loops" in sections
+    assert "contradictions" in sections
+
+
+def test_synthesis_prompt_includes_feedback_context():
+    """build_synthesis_prompt mentions feedback history when present."""
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).isoformat(),
+        "period_end": datetime.now().isoformat(),
+        "stats": {"active_claims": 1, "concepts": 1, "challenged_claims": 0},
+        "recent_claims": [],
+        "open_tasks": [],
+        "contradictions": [],
+        "emerging_themes": [],
+        "dropped_threads": [],
+        "feedback_history": [
+            {"section": "open-loops", "useful": True, "note": "keep these coming"},
+        ],
+    }
+
+    prompt = build_synthesis_prompt(data)
+    assert "feedback_history" in prompt
+    assert "keep these coming" in prompt
+    assert "deprioritize or skip" in prompt
