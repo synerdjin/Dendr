@@ -3,12 +3,16 @@
 Extracts blocks (paragraphs, list items, headings), auto-assigns
 Obsidian block IDs (^dendr-<ulid>), and hashes per block for
 incremental re-processing.
+
+Also parses digest-level closure markers — the round-trip format the user
+edits in Wiki/digest.md to close out open task/plan blocks.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import ulid
@@ -220,3 +224,75 @@ def inject_block_ids(file_path: Path, blocks: list[Block]) -> bool:
 def get_file_hash(file_path: Path) -> str:
     """Hash the entire file for change detection."""
     return hashlib.sha256(file_path.read_bytes()).hexdigest()[:16]
+
+
+# ── Closure markers (digest review flow) ─────────────────────────────
+#
+# Closure lines look like:
+#
+#   - [ ] **Finish X** — *from 2026-03-15 (3w old)* <!-- closure:dendr-01h... status:open -->
+#
+# The checkbox is the ergonomic handle; the HTML comment is the source
+# of truth (carries the block_id). A status word inside the comment
+# wins if present; otherwise the checkbox state is authoritative
+# (`[x]` → done, `[ ]` → open).
+
+_CLOSURE_RE = re.compile(
+    r"^\s*-\s*\[(?P<checkbox>[ xX])\]"  # checkbox
+    r".*?"  # task label
+    r"<!--\s*closure:(?P<block_id>[\w-]+)"  # block_id
+    r"(?:\s+status:(?P<status>open|done|abandoned|snoozed|still-live))?"
+    r"\s*-->",
+    re.MULTILINE,
+)
+
+_VALID_STATUSES = {"open", "done", "abandoned", "snoozed", "still-live"}
+
+
+@dataclass
+class TaskClosure:
+    """A closure marker parsed from digest.md."""
+
+    block_id: str
+    status: str  # open | done | abandoned | snoozed | still-live
+    checkbox_checked: bool
+
+
+def parse_closures(digest_text: str) -> list[TaskClosure]:
+    """Extract closure markers from a digest markdown string.
+
+    Status resolution:
+      1. If the HTML comment has `status:X` with X != open, that wins.
+      2. Otherwise `[x]` → done, `[ ]` → open.
+    """
+    results: list[TaskClosure] = []
+    seen: set[str] = set()
+
+    for match in _CLOSURE_RE.finditer(digest_text):
+        block_id = match.group("block_id")
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+
+        checked = match.group("checkbox").lower() == "x"
+        explicit_status = match.group("status")
+
+        if explicit_status and explicit_status != "open":
+            status = explicit_status
+        elif checked:
+            status = "done"
+        else:
+            status = "open"
+
+        if status not in _VALID_STATUSES:
+            continue
+
+        results.append(
+            TaskClosure(
+                block_id=block_id,
+                status=status,
+                checkbox_checked=checked,
+            )
+        )
+
+    return results

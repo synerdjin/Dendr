@@ -428,10 +428,25 @@ Return ONLY valid JSON:
     ) -> str:
         """Generate a new evidence section for a wiki page."""
         evidence_text = "\n".join(f"- {e}" for e in new_evidence)
+
+        # Truncate existing content to avoid blowing the context window.
+        # We only need recent sections for de-dup context — the prompt tells
+        # the model to summarize ONLY the new evidence, not the history.
+        # ~4000 chars ≈ 1000 tokens, leaving headroom under the 8192 ctx.
+        MAX_EXISTING_CHARS = 4000
+        truncated = existing_content or ""
+        if len(truncated) > MAX_EXISTING_CHARS:
+            tail = truncated[-MAX_EXISTING_CHARS:]
+            # Snap to the next section boundary so we don't start mid-sentence
+            boundary = tail.find("### Evidence")
+            if boundary != -1:
+                tail = tail[boundary:]
+            truncated = "(… earlier sections truncated …)\n\n" + tail
+
         prompt = f"""You are maintaining a knowledge base wiki page for "{concept_title}".
 
-EXISTING PAGE CONTENT (LLM zone only):
-{existing_content or "(empty — this is a new page)"}
+EXISTING PAGE CONTENT (LLM zone only, most recent sections):
+{truncated or "(empty — this is a new page)"}
 
 NEW EVIDENCE to integrate:
 {evidence_text}

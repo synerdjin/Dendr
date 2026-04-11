@@ -40,10 +40,11 @@ from dendr.models import (
     PageType,
     QueueItem,
 )
-from dendr.parser import inject_block_ids, parse_daily_note
+from dendr.parser import inject_block_ids, parse_closures, parse_daily_note
 from dendr.privacy import filter_blocks
 from dendr.wiki import (
     append_activity_log,
+    append_entity_observation,
     append_evidence,
     ensure_page,
     update_index,
@@ -133,6 +134,14 @@ def _build_annotation(
     )
 
 
+# Statuses the user can set via the digest closure flow. If any of these
+# are already on record for a block, a re-annotation that returns
+# open/None must NOT reopen them — the tagger only reads the raw text
+# ("- [ ] task"), so it would clobber user-driven closures on every
+# re-ingest.
+_STICKY_CLOSED_STATUSES = {"done", "abandoned", "snoozed", "still-live"}
+
+
 def _track_task_lifecycle(
     conn: sqlite3.Connection, annotation: BlockAnnotation
 ) -> None:
@@ -141,6 +150,9 @@ def _track_task_lifecycle(
     Compares the new annotation against any existing annotation for the same
     block_id. If completion_status changed (e.g. open -> done), log it.
     If this is a new task/plan block, log a 'created' event.
+
+    Mutates `annotation.completion_status` to preserve sticky user-driven
+    closures when the tagger tries to reopen them.
     """
     if annotation.block_type.value not in ("task", "plan"):
         return
@@ -153,17 +165,25 @@ def _track_task_lifecycle(
         # New task — log creation
         if new_status in (None, "open"):
             db.insert_task_event(conn, annotation.block_id, "created", source_date)
-    else:
-        old_status = existing["completion_status"]
-        if old_status == new_status:
-            return
-        # Status changed
-        if new_status == "done":
-            db.insert_task_event(conn, annotation.block_id, "completed", source_date)
-        elif new_status == "abandoned":
-            db.insert_task_event(conn, annotation.block_id, "abandoned", source_date)
-        elif new_status == "blocked":
-            db.insert_task_event(conn, annotation.block_id, "blocked", source_date)
+        return
+
+    old_status = existing["completion_status"]
+
+    # Sticky closures: once the user has closed a task via the digest
+    # flow, a subsequent re-annotation must not silently reopen it.
+    if old_status in _STICKY_CLOSED_STATUSES and new_status in (None, "open"):
+        annotation.completion_status = old_status
+        return
+
+    if old_status == new_status:
+        return
+
+    if new_status == "done":
+        db.insert_task_event(conn, annotation.block_id, "completed", source_date)
+    elif new_status == "abandoned":
+        db.insert_task_event(conn, annotation.block_id, "abandoned", source_date)
+    elif new_status == "blocked":
+        db.insert_task_event(conn, annotation.block_id, "blocked", source_date)
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
@@ -223,7 +243,9 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     total2 = len(annotated)
     logger.info("Phase 2/3: embedding & canonicalizing %d blocks", total2)
 
-    phase2: dict[str, tuple[QueueItem, BlockAnnotation, dict[str, str]]] = {}
+    phase2: dict[
+        str, tuple[QueueItem, BlockAnnotation, dict[str, str], dict[str, str]]
+    ] = {}
     enriched: dict[str, Any] = {}
 
     for idx2, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
@@ -231,8 +253,13 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             logger.info(
                 "Phase 2a/3: canonicalizing block %d/%d: %s", idx2, total2, block_id
             )
-            slug_map = canonicalize_concepts(annotation.concepts, llm, conn, config)
-            phase2[block_id] = (item, annotation, slug_map)
+            slug_map = canonicalize_concepts(
+                annotation.concepts, llm, conn, config, page_type="concept"
+            )
+            entity_slug_map = canonicalize_concepts(
+                annotation.entities, llm, conn, config, page_type="entity"
+            )
+            phase2[block_id] = (item, annotation, slug_map, entity_slug_map)
         except Exception as e:
             logger.error("Failed in phase 2a for block %s: %s", block_id, e)
 
@@ -241,7 +268,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not shallow:
         enrich_total = len(phase2)
         logger.info("Phase 2b/3: enriching %d blocks", enrich_total)
-        for idx2b, (block_id, (item, annotation, slug_map)) in enumerate(
+        for idx2b, (block_id, (item, annotation, slug_map, _entity_map)) in enumerate(
             phase2.items(), 1
         ):
             try:
@@ -286,7 +313,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     logger.info("Phase 3/3: committing %d blocks", total3)
     processed = 0
 
-    for block_id, (item, annotation, slug_map) in phase2.items():
+    for block_id, (item, annotation, slug_map, entity_slug_map) in phase2.items():
         try:
             conn.execute("BEGIN")
             try:
@@ -358,10 +385,15 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                                 for cc in c.concepts
                             )
                         ]
-                    if not evidence:
-                        evidence = [f"Referenced in {source_ref}"]
 
+                    # Always ensure the page exists so it can be linked to,
+                    # but skip the LLM section write if there's no real claim
+                    # evidence — otherwise we burn tokens producing
+                    # "X was referenced on date Y" filler.
                     ensure_page(config, conn, slug, title, PageType.CONCEPT)
+                    if not evidence:
+                        continue
+
                     append_evidence(
                         config,
                         conn,
@@ -372,6 +404,22 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                         source_ref,
                         PageType.CONCEPT,
                     )
+
+                # Update wiki pages for entities — entity pages just collect
+                # block gists (no LLM rewriting), enabling entity-centric
+                # retrieval like "what have I noted about Tim Urban".
+                for ent_candidate, ent_slug in entity_slug_map.items():
+                    ent_title = ent_candidate.strip()
+                    ensure_page(config, conn, ent_slug, ent_title, PageType.ENTITY)
+                    if annotation.gist:
+                        append_entity_observation(
+                            config,
+                            conn,
+                            ent_slug,
+                            ent_title,
+                            annotation.gist,
+                            source_ref,
+                        )
 
                 db.upsert_block_state(
                     conn,
@@ -407,10 +455,79 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     return processed
 
 
+# Closure event_type for each user-driven status.
+_CLOSURE_EVENT_TYPES = {
+    "done": "completed",
+    "abandoned": "abandoned",
+    "snoozed": "snoozed",
+    "still-live": "reopened",
+}
+
+
+def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
+    """Apply closure markers from Wiki/digest.md to block annotations.
+
+    Runs before the scan/ingest phase so user closures are in place
+    before any re-annotation can clobber them.
+    """
+    digest_path = config.wiki_dir / "digest.md"
+    if not digest_path.exists():
+        return 0
+
+    try:
+        text = digest_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("Could not read digest for closures: %s", e)
+        return 0
+
+    closures = parse_closures(text)
+    if not closures:
+        return 0
+
+    applied = 0
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for closure in closures:
+        existing = db.get_block_annotation(conn, closure.block_id)
+        if existing is None:
+            continue
+
+        old_status = existing["completion_status"]
+        new_status = closure.status
+
+        # "still-live" reopens a closed task — set status back to open.
+        stored_status = "open" if new_status == "still-live" else new_status
+
+        if old_status == stored_status:
+            continue
+
+        db.update_completion_status(conn, closure.block_id, stored_status)
+        event_type = _CLOSURE_EVENT_TYPES.get(new_status)
+        if event_type:
+            db.insert_task_event(
+                conn,
+                closure.block_id,
+                event_type,
+                today,
+                source="user",
+            )
+        applied += 1
+
+    if applied > 0:
+        logger.info("Applied %d closure(s) from digest", applied)
+        db.append_log(conn, "closures_applied", {"count": applied})
+
+    return applied
+
+
 def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict:
-    """Full ingest cycle: scan -> queue -> process."""
+    """Full ingest cycle: reconcile closures -> scan -> queue -> process."""
     logger.info("Starting ingest cycle...")
     t0 = time.monotonic()
+
+    closures_applied = reconcile_closures(config, conn)
+    if closures_applied:
+        logger.info("Reconciled %d closures from digest", closures_applied)
 
     dirty = scan_daily_notes(config, conn)
     queued = queue_dirty_blocks(config, dirty)
@@ -422,6 +539,7 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
     INGEST_CYCLE_SECONDS.observe(time.monotonic() - t0)
 
     return {
+        "closures_applied": closures_applied,
         "dirty_blocks": len(dirty),
         "queued": queued,
         "processed": processed,

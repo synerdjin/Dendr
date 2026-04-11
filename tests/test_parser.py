@@ -3,7 +3,12 @@
 import tempfile
 from pathlib import Path
 
-from dendr.parser import parse_daily_note, inject_block_ids, get_file_hash
+from dendr.parser import (
+    get_file_hash,
+    inject_block_ids,
+    parse_closures,
+    parse_daily_note,
+)
 
 
 def test_parse_empty_note():
@@ -109,3 +114,95 @@ def test_file_hash():
         h2 = get_file_hash(Path(f.name))
         assert h1 == h2
         assert len(h1) == 16
+
+
+# ── Closure markers ────────────────────────────────────────────────
+
+
+def test_parse_closures_unchecked_open():
+    text = "- [ ] **Do X** — *3w ago* <!-- closure:dendr-abc status:open -->"
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].block_id == "dendr-abc"
+    assert closures[0].status == "open"
+    assert closures[0].checkbox_checked is False
+
+
+def test_parse_closures_checked_becomes_done():
+    text = "- [x] **Done thing** — *1w ago* <!-- closure:dendr-xyz status:open -->"
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].status == "done"
+    assert closures[0].checkbox_checked is True
+
+
+def test_parse_closures_explicit_status_wins():
+    # User typed "abandoned" even though checkbox is still unchecked
+    text = "- [ ] **Old plan** — *2mo ago* <!-- closure:dendr-111 status:abandoned -->"
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].status == "abandoned"
+
+
+def test_parse_closures_still_live():
+    text = "- [ ] **Keep** — *6w ago* <!-- closure:dendr-222 status:still-live -->"
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].status == "still-live"
+
+
+def test_parse_closures_snoozed():
+    text = "- [ ] **Later** — *3w ago* <!-- closure:dendr-333 status:snoozed -->"
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].status == "snoozed"
+
+
+def test_parse_closures_multiple_and_dedup():
+    text = """
+## Task Review
+
+### 1-2w old
+
+- [ ] **First** — *1w ago* <!-- closure:dendr-a status:open -->
+- [x] **Second** — *2w ago* <!-- closure:dendr-b status:open -->
+
+### 1m+ old
+
+- [ ] **Third** — *6w ago* <!-- closure:dendr-c status:abandoned -->
+- [ ] **Dup** — *6w ago* <!-- closure:dendr-c status:open -->
+"""
+    closures = parse_closures(text)
+    # Three unique block_ids, dendr-c dedups to the first occurrence
+    assert len(closures) == 3
+    ids = [c.block_id for c in closures]
+    assert ids == ["dendr-a", "dendr-b", "dendr-c"]
+    assert closures[0].status == "open"
+    assert closures[1].status == "done"
+    assert closures[2].status == "abandoned"
+
+
+def test_parse_closures_ignores_unrelated_comments():
+    text = """
+- [ ] Regular task (no marker)
+<!-- feedback:narrative
+useful: yes
+-->
+- [ ] **Real one** — *8d ago* <!-- closure:dendr-real status:open -->
+"""
+    closures = parse_closures(text)
+    assert len(closures) == 1
+    assert closures[0].block_id == "dendr-real"
+
+
+def test_parse_closures_empty():
+    assert parse_closures("") == []
+    assert parse_closures("# Just a heading\n\nNo closures here.") == []
+
+
+def test_parse_closures_missing_status_defaults_to_checkbox():
+    # No status: in the comment — checkbox drives it
+    text_unchecked = "- [ ] **A** <!-- closure:dendr-q -->"
+    text_checked = "- [x] **B** <!-- closure:dendr-r -->"
+    assert parse_closures(text_unchecked)[0].status == "open"
+    assert parse_closures(text_checked)[0].status == "done"

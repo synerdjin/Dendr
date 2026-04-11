@@ -177,11 +177,26 @@ def append_evidence(
     # Get existing LLM zone content
     existing_zone = _extract_llm_zone(content)
 
-    # Generate new section via local LLM
+    # Skip if a section for this exact (date, source) already exists —
+    # multiple blocks from the same daily note would otherwise produce
+    # duplicate sections, and re-runs would compound the bloat.
     now = datetime.now().strftime("%Y-%m-%d")
-    section_header = f"\n### Evidence ({now}, from {source_ref})\n\n"
+    section_marker = f"### Evidence ({now}, from {source_ref})"
+    if section_marker in existing_zone:
+        logger.info("Skipping %s: section for %s already exists", slug, source_ref)
+        return
+
+    # Generate new section via local LLM
     section_body = llm.generate_wiki_section(title, new_evidence, existing_zone)
 
+    # Skip if the LLM returned nothing — don't write a header with no body.
+    if not section_body.strip():
+        logger.warning(
+            "Skipping %s: LLM returned empty section body for %s", slug, source_ref
+        )
+        return
+
+    section_header = f"\n{section_marker}\n\n"
     if human_touched:
         # Append-only: add to end of LLM zone
         new_zone = existing_zone + section_header + section_body
@@ -206,6 +221,60 @@ def append_evidence(
         {"slug": slug, "source": source_ref, "claims_count": len(new_evidence)},
     )
     logger.info("Appended %d evidence items to %s", len(new_evidence), slug)
+
+
+def append_entity_observation(
+    config: Config,
+    conn,
+    slug: str,
+    title: str,
+    observation: str,
+    source_ref: str,
+) -> None:
+    """Append a one-line observation to an entity page (no LLM call).
+
+    Entity pages accumulate raw block gists rather than LLM-synthesized
+    sections — they exist for entity-centric retrieval ("what have I
+    written about Tim Urban") and don't need rewording. This is also
+    much faster than calling the enrichment model for every mention.
+    """
+    if not observation.strip():
+        return
+
+    page_path = ensure_page(config, conn, slug, title, PageType.ENTITY)
+    rel_path = str(page_path.relative_to(config.vault_path))
+    content = page_path.read_text(encoding="utf-8")
+
+    stored_hash = get_page_hash(conn, rel_path)
+    human_touched = _is_human_touched(content, stored_hash)
+    if human_touched:
+        content = _update_frontmatter(content, "human_touched", "true")
+        logger.info("Page %s is human-touched, append-only mode", slug)
+
+    existing_zone = _extract_llm_zone(content)
+
+    # Idempotency: skip if this exact source_ref already has an observation
+    section_marker = f"### Observation (from {source_ref})"
+    if section_marker in existing_zone:
+        return
+
+    section = f"\n{section_marker}\n\n{observation.strip()}\n"
+    new_zone = existing_zone + section
+    new_content = _replace_llm_zone(content, new_zone)
+    now = datetime.now().strftime("%Y-%m-%d")
+    new_content = _update_frontmatter(new_content, "updated", now)
+
+    page_path.write_text(new_content, encoding="utf-8")
+    new_hash = _hash_content(new_content)
+    set_page_hash(conn, rel_path, new_hash)
+    new_content = _update_frontmatter(new_content, "last_llm_hash", new_hash)
+    page_path.write_text(new_content, encoding="utf-8")
+
+    append_log(
+        conn,
+        "entity_observation_added",
+        {"slug": slug, "source": source_ref},
+    )
 
 
 def update_index(config: Config, conn) -> None:

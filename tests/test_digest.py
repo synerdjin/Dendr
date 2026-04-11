@@ -12,6 +12,10 @@ from dendr.db import (
 )
 from dendr.digest import (
     SectionFeedback,
+    _age_days,
+    _age_suffix,
+    _annotation_to_dict,
+    _render_task_review,
     build_synthesis_prompt,
     ingest_feedback,
     parse_feedback,
@@ -117,10 +121,12 @@ def test_get_dropped_threads():
 
 def test_render_local_digest_with_annotations():
     """render_local_digest produces valid markdown from annotation-based data."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
     data = {
         "generated_at": datetime.now().isoformat(),
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-        "period_end": datetime.now().strftime("%Y-%m-%d"),
+        "period_end": today,
         "stats": {
             "active_claims": 42,
             "concepts": 10,
@@ -130,7 +136,7 @@ def test_render_local_digest_with_annotations():
         "narrative_blocks": [
             {
                 "block_id": "b1",
-                "source_date": "2026-04-08",
+                "source_date": two_days_ago,
                 "original_text": "I'm feeling burned out",
                 "gist": "Feeling burned out from project work",
                 "block_type": "reflection",
@@ -170,7 +176,7 @@ def test_render_local_digest_with_annotations():
             "open_tasks": [
                 {
                     "block_id": "t1",
-                    "source_date": "2026-04-07",
+                    "source_date": two_days_ago,
                     "original_text": "Fix CI pipeline",
                     "gist": "Fix CI pipeline",
                     "block_type": "task",
@@ -356,6 +362,207 @@ note: both are true actually, different contexts
     assert len(feedback) == 1
     assert feedback[0].useful is None
     assert "both are true" in feedback[0].note
+
+
+# ── Age helpers + Task Review ─────────────────────────────────────────
+
+
+def test_age_days_today():
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert _age_days(today) == 0
+
+
+def test_age_days_past():
+    three_weeks = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    assert _age_days(three_weeks) == 21
+
+
+def test_age_days_malformed():
+    assert _age_days("not-a-date") == 0
+    assert _age_days("") == 0
+
+
+def test_age_suffix_words():
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    three_weeks = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    two_months = (datetime.now() - timedelta(days=62)).strftime("%Y-%m-%d")
+    assert _age_suffix(today) == "written today"
+    assert _age_suffix(yesterday) == "written 1d ago"
+    assert _age_suffix(three_weeks) == "written 3w ago"
+    assert "mo ago" in _age_suffix(two_months)
+
+
+def test_render_task_review_empty_with_fresh_only():
+    # All fresh tasks (<7d) should route to Open Loops, not Task Review.
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": today,
+        "period_end": today,
+        "stats": {
+            "active_claims": 0,
+            "concepts": 0,
+            "challenged_claims": 0,
+            "annotations": 1,
+        },
+        "narrative_blocks": [],
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
+            "open_tasks": [
+                {
+                    "block_id": "fresh-1",
+                    "source_date": today,
+                    "gist": "Fresh task",
+                    "life_areas": ["work"],
+                    "urgency": "today",
+                    "importance": "high",
+                    "completion_status": "open",
+                }
+            ],
+            "completed_recently": [],
+            "stale_tasks": [],
+        },
+        "contradictions": [],
+        "dropped_threads": [],
+        "section_effectiveness": {},
+    }
+    result = render_local_digest(data)
+    assert "Task Review" not in result
+    assert "Open Loops (1 fresh)" in result
+    assert "[today when written]" in result
+
+
+def test_render_task_review_buckets():
+    twelve_days = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d")
+    three_weeks = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    two_months = (datetime.now() - timedelta(days=62)).strftime("%Y-%m-%d")
+
+    tasks = [
+        {
+            "block_id": "dendr-early",
+            "source_date": twelve_days,
+            "gist": "Fresh-ish task",
+            "life_areas": ["work"],
+        },
+        {
+            "block_id": "dendr-mid",
+            "source_date": three_weeks,
+            "gist": "Middle task",
+            "life_areas": ["health"],
+        },
+        {
+            "block_id": "dendr-old",
+            "source_date": two_months,
+            "gist": "Ancient task",
+            "life_areas": [],
+        },
+    ]
+
+    rendered = _render_task_review(tasks)
+    assert "Task Review (3 open" in rendered
+    # All three age buckets present, oldest first
+    assert "### 1m+ old" in rendered
+    assert "### 2-4w old" in rendered
+    assert "### 1-2w old" in rendered
+    # Oldest renders before newest
+    assert rendered.index("1m+ old") < rendered.index("2-4w old")
+    assert rendered.index("2-4w old") < rendered.index("1-2w old")
+    # Every task has a closure marker with its block_id
+    assert "<!-- closure:dendr-early status:open -->" in rendered
+    assert "<!-- closure:dendr-mid status:open -->" in rendered
+    assert "<!-- closure:dendr-old status:open -->" in rendered
+    # Checkbox is unchecked
+    assert "- [ ] **Fresh-ish task**" in rendered
+
+
+def test_render_local_digest_includes_task_review_section():
+    three_weeks = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "period_end": today,
+        "stats": {
+            "active_claims": 0,
+            "concepts": 0,
+            "challenged_claims": 0,
+            "annotations": 1,
+        },
+        "narrative_blocks": [],
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
+            "open_tasks": [
+                {
+                    "block_id": "dendr-stale-1",
+                    "source_date": three_weeks,
+                    "gist": "Old unresolved thing",
+                    "life_areas": ["work"],
+                    "urgency": "today",
+                    "importance": "high",
+                    "completion_status": "open",
+                }
+            ],
+            "completed_recently": [],
+            "stale_tasks": [],
+        },
+        "contradictions": [],
+        "dropped_threads": [],
+        "section_effectiveness": {},
+    }
+    result = render_local_digest(data)
+    assert "## Task Review" in result
+    assert "Old unresolved thing" in result
+    assert "<!-- closure:dendr-stale-1 status:open -->" in result
+    # No Open Loops header since only stale tasks
+    assert "## Open Loops" not in result
+    # feedback marker for task-review section
+    assert "feedback:task-review" in result
+
+
+def test_annotation_to_dict_age_days():
+    # Build a fake sqlite3.Row-ish dict via _annotation_to_dict.
+    # Easier path: round-trip through a real DB.
+    from dendr.db import connect, init_schema, upsert_block_annotation
+    from dendr.models import BlockAnnotation, BlockType
+
+    f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+    f.close()
+    conn = connect(Path(f.name))
+    init_schema(conn)
+
+    eight_days_ago = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
+    ann = BlockAnnotation(
+        block_id="test-age",
+        source_file="Daily/x.md",
+        source_date=eight_days_ago,
+        original_text="stuff",
+        gist="a gist",
+        block_type=BlockType.TASK,
+        life_areas=["work"],
+        emotional_valence=0.0,
+        emotional_labels=[],
+        intensity=0.5,
+        urgency="today",
+        importance="high",
+        completion_status="open",
+        concepts=[],
+        entities=[],
+    )
+    upsert_block_annotation(conn, ann)
+
+    row = conn.execute(
+        "SELECT * FROM block_annotations WHERE block_id = ?", ("test-age",)
+    ).fetchone()
+
+    d = _annotation_to_dict(row)
+    assert d["age_days"] == 8
+    assert d["urgency"] == "today"
+    assert d["source_date"] == eight_days_ago
 
 
 def test_ingest_feedback_creates_claims():

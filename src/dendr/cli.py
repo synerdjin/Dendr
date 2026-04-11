@@ -330,9 +330,17 @@ def serve(data_dir: str | None, vault: str | None) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path (needed when config.json has a stale path, e.g. inside containers)",
+)
 @click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
 @click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
-def digest(data_dir: str | None, weeks: int, claude: bool) -> None:
+def digest(
+    data_dir: str | None, vault: str | None, weeks: int, claude: bool
+) -> None:
     """Generate a weekly digest briefing."""
     from dendr.config import Config
     from dendr.db import connect, init_schema
@@ -340,6 +348,8 @@ def digest(data_dir: str | None, weeks: int, claude: bool) -> None:
 
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
     conn = connect(config.db_path)
     init_schema(conn)
 

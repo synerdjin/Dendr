@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 SECTION_IDS = [
     "narrative",
+    "task-review",
     "patterns",
     "open-loops",
     "contradictions",
@@ -49,6 +50,63 @@ class SectionFeedback:
 
 def _render_feedback_block(section_id: str) -> str:
     return f"<!-- feedback:{section_id}\nuseful: \nnote: \n-->"
+
+
+def _task_review_bucket(days: int) -> str:
+    """Pick an age bucket for a stale open task."""
+    if days < 14:
+        return "1-2w"
+    if days < 30:
+        return "2-4w"
+    return "1m+"
+
+
+_BUCKET_ORDER = ["1m+", "2-4w", "1-2w"]
+
+
+def _render_task_review(tasks: list[dict]) -> str:
+    """Render the Task Review section with closure markers.
+
+    Each task gets a round-trip marker the user can edit in place:
+
+        - [ ] **gist** — *written 3w ago (work)* <!-- closure:BLOCK_ID status:open -->
+
+    Users flip `[ ]` → `[x]`, or change `status:open` to `done`,
+    `abandoned`, `snoozed`, or `still-live`. The next ingest reconciles.
+    """
+    by_bucket: dict[str, list[dict]] = {}
+    for t in tasks:
+        bucket = _task_review_bucket(_age_days(t.get("source_date", "")))
+        by_bucket.setdefault(bucket, []).append(t)
+
+    lines = [f"## Task Review ({len(tasks)} open, >1 week old)"]
+    lines.append("")
+    lines.append(
+        "*Flip `[ ]` to `[x]` to close, or edit `status:` to "
+        "`done`, `abandoned`, `snoozed`, or `still-live`. "
+        "The next ingest will reconcile.*"
+    )
+    lines.append("")
+
+    for bucket in _BUCKET_ORDER:
+        items = by_bucket.get(bucket)
+        if not items:
+            continue
+        lines.append(f"### {bucket} old")
+        lines.append("")
+        for t in items:
+            gist = t.get("gist") or "(no gist)"
+            areas = t.get("life_areas") or []
+            area_tag = f", {', '.join(areas)}" if areas else ""
+            age = _age_suffix(t.get("source_date", ""))
+            block_id = t.get("block_id", "")
+            lines.append(
+                f"- [ ] **{gist}** — *{age}{area_tag}* "
+                f"<!-- closure:{block_id} status:open -->"
+            )
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def parse_feedback(digest_text: str) -> list[SectionFeedback]:
@@ -110,11 +168,45 @@ def ingest_feedback(
     return {"ingested_claims": ingested_claims, "logged_ratings": logged_ratings}
 
 
+def _age_days(source_date: str) -> int:
+    """Days between source_date (YYYY-MM-DD) and today. 0 for today/malformed."""
+    try:
+        d = datetime.strptime(source_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return 0
+    delta = datetime.now().date() - d
+    return max(0, delta.days)
+
+
+def _age_suffix(source_date: str) -> str:
+    """Human-readable 'written Nw ago' suffix."""
+    days = _age_days(source_date)
+    if days == 0:
+        return "written today"
+    if days == 1:
+        return "written 1d ago"
+    if days < 7:
+        return f"written {days}d ago"
+    if days < 30:
+        weeks = days // 7
+        return f"written {weeks}w ago"
+    if days < 365:
+        months = days // 30
+        return f"written {months}mo ago"
+    return f"written {days // 365}y ago"
+
+
 def _annotation_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a block_annotations row to a dict for JSON serialization."""
+    """Convert a block_annotations row to a dict for JSON serialization.
+
+    `age_days` is computed at render time so Claude (and the local
+    renderer) can distinguish urgency-when-written from urgency-now.
+    """
+    source_date = row["source_date"]
     return {
         "block_id": row["block_id"],
-        "source_date": row["source_date"],
+        "source_date": source_date,
+        "age_days": _age_days(source_date),
         "original_text": row["original_text"],
         "gist": row["gist"],
         "block_type": row["block_type"],
@@ -196,13 +288,28 @@ def build_synthesis_prompt(data: dict) -> str:
     return f"""You are Dendr's weekly advisor. Your job is to produce actionable,
 specific advice grounded in the user's actual notes and patterns.
 
+## Critical reading rule — urgency is historical
+
+Every block has a `source_date` and an `age_days` field. The `urgency`
+(today / this_week / later) and `importance` (high / medium / low)
+fields reflect the user's state **at `source_date`, not today**.
+
+- A block from 3 weeks ago tagged `urgency: today` means "the user felt
+  it was urgent 3 weeks ago". That is a SIGNAL (they cared a lot), not a
+  CURRENT DEADLINE.
+- Anything with `age_days > 14` and `completion_status != 'done'` is
+  either stale, abandoned, or a standing concern that the user never
+  resolved. Do not present it as if it's due this week.
+- When in doubt, prefer phrases like "3 weeks ago you flagged X as
+  urgent — is it still live?" over "you need to do X today".
+
 ## Data from the past week
 
 The data has three layers:
 
 1. **narrative_blocks** — the user's original text with rich annotations
-   (emotional valence, intensity, life areas, causal links). READ THESE FIRST
-   to understand what the user is actually going through.
+   (emotional valence, intensity, life areas, causal links, `age_days`).
+   READ THESE FIRST to understand what the user is actually going through.
 
 2. **patterns** — aggregated trends over 4 weeks: recurring topics with
    emotional trajectory, life area distribution, open/completed/stale tasks.
@@ -307,24 +414,37 @@ def render_local_digest(data: dict) -> str:
         lines.append(_render_feedback_block("narrative"))
         lines.append("")
 
-    # Open loops from annotations
+    # Task Review — stale open tasks (>7 days) with closure markers.
+    # Partitioned from open_tasks so the user can close loops in-place.
     open_tasks = data["patterns"].get("open_tasks", [])
-    stale_tasks = data["patterns"].get("stale_tasks", [])
-    if open_tasks or stale_tasks:
+    fresh_tasks: list[dict] = []
+    review_tasks: list[dict] = []
+    for t in open_tasks:
+        if _age_days(t.get("source_date", "")) >= 7:
+            review_tasks.append(t)
+        else:
+            fresh_tasks.append(t)
+
+    if review_tasks:
         has_content = True
-        lines.append(
-            f"## Open Loops ({len(open_tasks)} active, {len(stale_tasks)} stale)"
-        )
+        review_block = _render_task_review(review_tasks)
+        lines.append(review_block)
         lines.append("")
-        for t in open_tasks[:15]:
-            urgency = f" [{t['urgency']}]" if t.get("urgency") else ""
-            importance = f" [{t['importance']}]" if t.get("importance") else ""
-            lines.append(f"- {t['gist']}{urgency}{importance}")
-        if stale_tasks:
-            lines.append("")
-            lines.append("**Stale (> 2 weeks, no update):**")
-            for t in stale_tasks[:10]:
-                lines.append(f"- {t['gist']} *({t['source_date']} — still relevant?)*")
+        lines.append(_render_feedback_block("task-review"))
+        lines.append("")
+
+    # Open Loops — fresh tasks only (<7d). Stale ones live in Task Review.
+    if fresh_tasks:
+        has_content = True
+        lines.append(f"## Open Loops ({len(fresh_tasks)} fresh)")
+        lines.append("")
+        for t in fresh_tasks[:15]:
+            suffix = ""
+            if t.get("urgency"):
+                suffix += f" [{t['urgency']} when written]"
+            if t.get("importance"):
+                suffix += f" [{t['importance']}]"
+            lines.append(f"- {t['gist']}{suffix}")
         lines.append("")
         lines.append(_render_feedback_block("open-loops"))
         lines.append("")

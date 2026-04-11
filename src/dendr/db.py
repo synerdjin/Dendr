@@ -162,6 +162,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             block_id        TEXT NOT NULL,
             event_type      TEXT NOT NULL,
             source_date     TEXT NOT NULL,
+            source          TEXT NOT NULL DEFAULT 'auto',
             created_at      TEXT NOT NULL
         );
 
@@ -171,6 +172,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
             ON task_events(event_type);
         """
     )
+
+    # task_events.source was added after initial release — backfill on
+    # existing DBs that predate it.
+    try:
+        conn.execute(
+            "ALTER TABLE task_events ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'"
+        )
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
     # FTS5 for claims
     try:
@@ -459,10 +469,20 @@ def insert_concept_embedding(
 
 
 def find_nearest_concept(
-    conn: sqlite3.Connection, embedding: np.ndarray, top_k: int = 5
+    conn: sqlite3.Connection,
+    embedding: np.ndarray,
+    top_k: int = 5,
+    page_type: str | None = None,
 ) -> list[tuple[str, float]]:
-    """Find nearest concept slugs by embedding. Returns (slug, distance) pairs."""
+    """Find nearest concept slugs by embedding. Returns (slug, distance) pairs.
+
+    If page_type is provided, restricts results to slugs of that type
+    (concept vs entity). Over-fetches and post-filters since concepts_vec
+    only stores the slug as an aux column.
+    """
     try:
+        # Over-fetch when filtering so we still return ~top_k after the filter
+        fetch_k = top_k * 5 if page_type else top_k
         rows = conn.execute(
             """
             SELECT concept_slug, distance
@@ -471,11 +491,26 @@ def find_nearest_concept(
             ORDER BY distance
             LIMIT ?
             """,
-            (embedding.astype(np.float32).tobytes(), top_k),
+            (embedding.astype(np.float32).tobytes(), fetch_k),
         ).fetchall()
-        return [(r["concept_slug"], r["distance"]) for r in rows]
     except sqlite3.OperationalError:
         return []
+
+    if not rows or page_type is None:
+        return [(r["concept_slug"], r["distance"]) for r in rows]
+
+    slugs = [r["concept_slug"] for r in rows]
+    placeholders = ",".join("?" * len(slugs))
+    type_rows = conn.execute(
+        f"SELECT slug FROM concepts WHERE slug IN ({placeholders}) AND page_type = ?",
+        (*slugs, page_type),
+    ).fetchall()
+    matching = {r["slug"] for r in type_rows}
+    return [
+        (r["concept_slug"], r["distance"])
+        for r in rows
+        if r["concept_slug"] in matching
+    ][:top_k]
 
 
 def get_all_concepts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -614,15 +649,38 @@ def insert_task_event(
     block_id: str,
     event_type: str,
     source_date: str,
+    source: str = "auto",
 ) -> None:
-    """Record a task lifecycle event (created, completed, abandoned, mentioned)."""
+    """Record a task lifecycle event.
+
+    `source` is 'auto' for events detected by the tagger and 'user' for
+    events the user drove via the digest closure review flow.
+    """
     conn.execute(
         """
-        INSERT INTO task_events (block_id, event_type, source_date, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO task_events (block_id, event_type, source_date, source, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (block_id, event_type, source_date, datetime.now().isoformat()),
+        (block_id, event_type, source_date, source, datetime.now().isoformat()),
     )
+
+
+def update_completion_status(
+    conn: sqlite3.Connection, block_id: str, status: str
+) -> bool:
+    """Set completion_status on an existing block annotation.
+
+    Returns True if a row was updated.
+    """
+    cur = conn.execute(
+        """
+        UPDATE block_annotations
+           SET completion_status = ?, updated_at = ?
+         WHERE block_id = ?
+        """,
+        (status, datetime.now().isoformat(), block_id),
+    )
+    return cur.rowcount > 0
 
 
 def get_task_lifecycle_stats(conn: sqlite3.Connection) -> dict:
