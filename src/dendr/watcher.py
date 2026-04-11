@@ -116,6 +116,12 @@ def run_daemon(config: Config) -> None:
     metrics_interval = 30  # seconds
     last_metrics = 0.0
 
+    # Fallback ingest poll — iCloud-on-Windows hydration often bypasses
+    # watchdog events, so a new daily note synced from iPhone may never
+    # fire on_modified. A periodic run_ingest catches what the watcher misses.
+    poll_interval = 3600  # seconds
+    last_poll = time.monotonic()
+
     try:
         while True:
             time.sleep(1)
@@ -129,6 +135,18 @@ def run_daemon(config: Config) -> None:
                     conn.close()
                 except Exception:
                     pass
+            if now - last_poll >= poll_interval:
+                last_poll = now
+                try:
+                    logger.info("Poll fallback: running ingest")
+                    conn = connect(config.db_path)
+                    init_schema(conn)
+                    llm = LLMClient(config)
+                    stats = run_ingest(config, conn, llm)
+                    logger.info("Poll ingest complete: %s", stats)
+                    conn.close()
+                except Exception as e:
+                    logger.error("Poll ingest failed: %s", e, exc_info=True)
     except KeyboardInterrupt:
         logger.info("Daemon shutting down...")
         observer.stop()
