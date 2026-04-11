@@ -86,18 +86,15 @@ def _split_into_raw_blocks(lines: list[str]) -> list[tuple[int, int, list[str]]]
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        # Heading starts a new block
         if stripped.startswith("#") and current_lines:
             blocks.append((start, i - 1, current_lines))
             current_lines = [line]
             start = i
-        # Blank line ends current block
         elif stripped == "":
             if current_lines:
                 blocks.append((start, i - 1, current_lines))
                 current_lines = []
             start = i + 1
-        # Top-level list item starts a new block
         elif _TOP_LEVEL_LIST_RE.match(line) and current_lines:
             blocks.append((start, i - 1, current_lines))
             current_lines = [line]
@@ -137,12 +134,10 @@ def parse_daily_note(
         if not block_text:
             continue
 
-        # Check for existing block ref on last line
         last_line = block_lines[-1]
         ref_match = _BLOCK_REF_RE.search(last_line)
         if ref_match:
             block_id = ref_match.group(1)
-            # Text without the block ref for hashing
             clean_text = "\n".join(block_lines[:-1]).strip()
             if not clean_text:
                 clean_text = _BLOCK_REF_RE.sub("", last_line).strip()
@@ -150,19 +145,16 @@ def parse_daily_note(
             block_id = _generate_block_id()
             clean_text = block_text
 
-        # Strip leading `- ` from top-level list items (logseq format)
         if clean_text.startswith("- "):
             clean_text = clean_text[2:]
         elif clean_text == "-":
-            continue  # empty list item, skip
+            continue
 
-        # Skip blocks with no meaningful content after cleaning
         if not clean_text.strip():
             continue
 
         block_hash = _hash_text(clean_text)
 
-        # Check if this block is an attachment embed
         is_attachment = False
         att_path = None
         att_type = None
@@ -202,16 +194,14 @@ def inject_block_ids(file_path: Path, blocks: list[Block]) -> bool:
     lines = text.split("\n")
     modified = False
 
-    # Build a map of line ranges that need block IDs injected
     for block in blocks:
         last_line_idx = block.line_end
         if last_line_idx >= len(lines):
             continue
         last_line = lines[last_line_idx]
         if _BLOCK_REF_RE.search(last_line):
-            continue  # already has a ref
+            continue
 
-        # Inject block ID at end of last line
         lines[last_line_idx] = last_line.rstrip() + f" ^{block.block_id}"
         modified = True
 

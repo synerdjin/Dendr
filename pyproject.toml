@@ -30,6 +30,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"dendr.templates" = ["*.md"]
+
 [tool.ruff.lint]
 # Auto-fix unused imports without human intervention
 fixable = ["F401"]

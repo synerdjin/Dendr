@@ -103,8 +103,6 @@ def get_page_path(config: Config, slug: str, page_type: PageType) -> Path:
     """Determine the file path for a concept/entity page."""
     if page_type == PageType.ENTITY:
         return config.entities_dir / f"{slug}.md"
-    elif page_type == PageType.SUMMARY:
-        return config.summaries_dir / f"{slug}.md"
     return config.concepts_dir / f"{slug}.md"
 
 

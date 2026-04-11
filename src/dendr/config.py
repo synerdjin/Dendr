@@ -67,10 +67,6 @@ class Config:
         return self.wiki_dir / "entities"
 
     @property
-    def summaries_dir(self) -> Path:
-        return self.wiki_dir / "summaries"
-
-    @property
     def lint_dir(self) -> Path:
         return self.wiki_dir / "_lint"
 
@@ -136,7 +132,6 @@ class Config:
             self.wiki_dir,
             self.concepts_dir,
             self.entities_dir,
-            self.summaries_dir,
             self.lint_dir,
             self.data_dir,
             self.queue_dir,
