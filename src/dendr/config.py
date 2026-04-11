@@ -22,12 +22,10 @@ def _default_data_dir() -> Path:
 class ModelConfig:
     """Local model configuration."""
 
-    enrichment_model: str = "phi-4-Q4_K_M.gguf"
     tagger_model: str = "google_gemma-3-4b-it-Q4_K_M.gguf"
     vlm_model: str = "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf"
     embedding_model: str = "nomic-embed-text-v1.5.Q8_0.gguf"
     # Context sizes
-    enrichment_ctx: int = 8192
     tagger_ctx: int = 4096
     vlm_ctx: int = 4096
     embedding_dim: int = 768
@@ -45,9 +43,7 @@ class Config:
 
     # Pipeline settings
     canonicalization_threshold: float = 0.86
-    backpressure_days: int = 7  # switch to shallow mode after N queued days
     search_port: int = 7777
-    stale_claim_weeks: int = 8  # lint: flag claims not reinforced in N weeks
 
     # Paths derived from vault_path
     @property
@@ -170,20 +166,16 @@ class Config:
             "vault_path": str(self.vault_path),
             "vault_id": self.vault_id,
             "models": {
-                "enrichment_model": self.models.enrichment_model,
                 "tagger_model": self.models.tagger_model,
                 "vlm_model": self.models.vlm_model,
                 "embedding_model": self.models.embedding_model,
-                "enrichment_ctx": self.models.enrichment_ctx,
                 "tagger_ctx": self.models.tagger_ctx,
                 "vlm_ctx": self.models.vlm_ctx,
                 "embedding_dim": self.models.embedding_dim,
                 "embedding_dim_short": self.models.embedding_dim_short,
             },
             "canonicalization_threshold": self.canonicalization_threshold,
-            "backpressure_days": self.backpressure_days,
             "search_port": self.search_port,
-            "stale_claim_weeks": self.stale_claim_weeks,
         }
         self.config_file_path.write_text(json.dumps(data, indent=2))
 
@@ -195,14 +187,17 @@ class Config:
         if not config_path.exists():
             return cls(data_dir=dd)
         data = json.loads(config_path.read_text())
-        models = ModelConfig(**data.get("models", {}))
+        model_data = {
+            k: v
+            for k, v in data.get("models", {}).items()
+            if k not in ("enrichment_model", "enrichment_ctx")
+        }
+        models = ModelConfig(**model_data)
         return cls(
             vault_path=Path(data["vault_path"]),
             data_dir=dd,
             vault_id=data.get("vault_id", str(uuid.uuid4())),
             models=models,
             canonicalization_threshold=data.get("canonicalization_threshold", 0.86),
-            backpressure_days=data.get("backpressure_days", 7),
             search_port=data.get("search_port", 7777),
-            stale_claim_weeks=data.get("stale_claim_weeks", 8),
         )

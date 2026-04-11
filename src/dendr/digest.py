@@ -1,8 +1,8 @@
-"""Weekly digest generator — three-layer context assembly for actionable advice.
+"""Weekly digest generator — two-layer context assembly for actionable advice.
 
 Layer 1: Narrative Blocks — top annotated blocks with original text + metadata
-Layer 2: Pattern Summaries — recurring topics, life area distribution, emotional trajectory
-Layer 3: Claim-level Data — contradictions, dropped threads
+Layer 2: Pattern Summaries — recurring topics, life area distribution,
+         emotional trajectory, task lifecycle
 
 Supports a feedback loop via per-section comment blocks in the rendered digest.
 """
@@ -18,7 +18,6 @@ from datetime import datetime, timedelta
 
 from dendr import db
 from dendr.config import Config
-from dendr.models import Claim, ClaimKind, ClaimStatus
 from dendr.wiki import append_activity_log
 
 logger = logging.getLogger(__name__)
@@ -28,8 +27,6 @@ SECTION_IDS = [
     "task-review",
     "patterns",
     "open-loops",
-    "contradictions",
-    "dropped-threads",
     "activity",
 ]
 
@@ -141,31 +138,12 @@ def ingest_feedback(
     feedback: list[SectionFeedback],
     digest_date: str,
 ) -> dict:
-    """Ingest feedback into feedback_scores table and optionally as claims."""
-    ingested_claims = 0
+    """Ingest feedback into feedback_scores table."""
     logged_ratings = 0
-
     for fb in feedback:
         db.upsert_feedback_score(conn, digest_date, fb.section, fb.useful, fb.note)
         logged_ratings += 1
-
-        if fb.note:
-            claim = Claim(
-                id=None,
-                text=fb.note,
-                concept_slug="",
-                source_block_ref=f"digest-feedback-{digest_date}",
-                source_file_hash="",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                confidence=0.9,
-                status=ClaimStatus.CREATED,
-                kind=ClaimKind.STATEMENT,
-            )
-            db.insert_claim(conn, claim)
-            ingested_claims += 1
-
-    return {"ingested_claims": ingested_claims, "logged_ratings": logged_ratings}
+    return {"logged_ratings": logged_ratings}
 
 
 def _age_days(source_date: str) -> int:
@@ -227,11 +205,10 @@ def _annotation_to_dict(row: sqlite3.Row) -> dict:
 def _gather_digest_data(
     config: Config, conn: sqlite3.Connection, weeks: int = 1
 ) -> dict:
-    """Assemble three-layer digest data from the knowledge store."""
+    """Assemble two-layer digest data from the knowledge store."""
     now = datetime.now()
     since = (now - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
     since_4w = (now - timedelta(weeks=4)).strftime("%Y-%m-%d")
-    dropped_before = (now - timedelta(weeks=2)).isoformat()
 
     # Layer 1: Narrative blocks (original text + annotation metadata)
     significant_rows = db.get_significant_blocks(conn, since, limit=25)
@@ -252,20 +229,7 @@ def _gather_digest_data(
         "task_lifecycle": db.get_task_lifecycle_stats(conn),
     }
 
-    # Layer 3: Claim-level data
-    contradictions = db.get_all_contradictions(conn)
-    dropped_threads = [
-        {
-            "concept_slug": r["concept_slug"],
-            "text": r["text"],
-            "created_at": r["created_at"],
-        }
-        for r in db.get_dropped_threads(conn, dropped_before)
-    ]
-
-    # Feedback effectiveness
     section_scores = db.get_section_effectiveness(conn)
-
     stats = db.get_stats(conn)
 
     return {
@@ -275,8 +239,6 @@ def _gather_digest_data(
         "stats": stats,
         "narrative_blocks": narrative_blocks,
         "patterns": patterns,
-        "contradictions": contradictions,
-        "dropped_threads": dropped_threads,
         "section_effectiveness": section_scores,
     }
 
@@ -305,7 +267,7 @@ fields reflect the user's state **at `source_date`, not today**.
 
 ## Data from the past week
 
-The data has three layers:
+The data has two layers:
 
 1. **narrative_blocks** — the user's original text with rich annotations
    (emotional valence, intensity, life areas, causal links, `age_days`).
@@ -313,8 +275,6 @@ The data has three layers:
 
 2. **patterns** — aggregated trends over 4 weeks: recurring topics with
    emotional trajectory, life area distribution, open/completed/stale tasks.
-
-3. **contradictions** and **dropped_threads** — claim-level signals.
 
 ```json
 {data_json}
@@ -351,12 +311,6 @@ Be specific. Quote the user's words. Suggest concrete actions.
 **Emerging Patterns** — Topics gaining frequency or shifting emotional valence.
 Note trends, don't over-interpret. Mention if a topic is trending more negative.
 
-**Contradictions** — Conflicting claims. State both sides neutrally.
-Ask whether the change was intentional.
-
-**Dropped Threads** — Mentioned once, never revisited. Only surface
-interesting/unfinished ones.
-
 ## Rules
 - Lead with the most important insight.
 - Be specific — quote or paraphrase the user's actual words.
@@ -381,9 +335,9 @@ def render_local_digest(data: dict) -> str:
         f"# Weekly Digest — {now_str}",
         "",
         f"**Period:** {period_start} → {now_str}  ",
-        f"**Active claims:** {data['stats']['active_claims']} | "
+        f"**Annotations:** {data['stats']['annotations']} | "
         f"**Concepts:** {data['stats']['concepts']} | "
-        f"**Annotations:** {data['stats'].get('annotations', 0)}",
+        f"**Open tasks:** {data['stats']['open_tasks']}",
         "",
     ]
 
@@ -494,32 +448,6 @@ def render_local_digest(data: dict) -> str:
         lines.append(_render_feedback_block("patterns"))
         lines.append("")
 
-    # Contradictions
-    if data["contradictions"]:
-        has_content = True
-        lines.append(f"## Contradictions ({len(data['contradictions'])})")
-        lines.append("")
-        for c in data["contradictions"]:
-            lines.append(
-                f"- [c:{c['confidence']:.2f}] {c['text'][:120]} "
-                f"([[{c['concept_slug']}]])"
-            )
-        lines.append("")
-        lines.append(_render_feedback_block("contradictions"))
-        lines.append("")
-
-    # Dropped threads
-    if data["dropped_threads"]:
-        has_content = True
-        lines.append(f"## Dropped Threads ({len(data['dropped_threads'])})")
-        lines.append("*Mentioned once, never revisited.*")
-        lines.append("")
-        for d in data["dropped_threads"]:
-            lines.append(f"- [[{d['concept_slug']}]]: {d['text'][:100]}")
-        lines.append("")
-        lines.append(_render_feedback_block("dropped-threads"))
-        lines.append("")
-
     # Completed recently
     completed = data["patterns"].get("completed_recently", [])
     if completed:
@@ -567,7 +495,7 @@ def generate_digest(
     digest_path = config.wiki_dir / "digest.md"
 
     # Ingest feedback from previous digest
-    feedback_stats = {"ingested_claims": 0, "logged_ratings": 0}
+    feedback_stats = {"logged_ratings": 0}
     if digest_path.exists():
         old_content = digest_path.read_text(encoding="utf-8")
         feedback = parse_feedback(old_content)
@@ -577,9 +505,8 @@ def generate_digest(
             feedback_stats = ingest_feedback(conn, feedback, digest_date)
             if feedback_stats["logged_ratings"] > 0:
                 logger.info(
-                    "Ingested feedback: %d ratings, %d claims",
+                    "Ingested feedback: %d ratings",
                     feedback_stats["logged_ratings"],
-                    feedback_stats["ingested_claims"],
                 )
 
     data = _gather_digest_data(config, conn, weeks=weeks)
@@ -597,11 +524,10 @@ def generate_digest(
 
     n_blocks = len(data.get("narrative_blocks", []))
     n_tasks = len(data.get("patterns", {}).get("open_tasks", []))
-    n_contras = len(data.get("contradictions", []))
     append_activity_log(
         config,
         f"DIGEST generated ({n_blocks} blocks, {n_tasks} open tasks, "
-        f"{n_contras} contradictions, {feedback_stats['logged_ratings']} feedback)",
+        f"{feedback_stats['logged_ratings']} feedback)",
     )
 
     logger.info("Digest written to %s", digest_path)

@@ -112,7 +112,6 @@ def _log_ft_pair(
 class LLMClient:
     """Unified interface to local LLM models."""
 
-    ENRICHMENT_PROMPT_VERSION = "v2"
     ANNOTATION_PROMPT_VERSION = "v1"
 
     def __init__(self, config: Config, skip_preflight: bool = False):
@@ -138,7 +137,6 @@ class LLMClient:
             # No manifest — check files directly by config filenames
             missing = []
             for name in [
-                self.config.models.enrichment_model,
                 self.config.models.tagger_model,
                 self.config.models.embedding_model,
             ]:
@@ -155,12 +153,6 @@ class LLMClient:
 
     def _model_path(self, filename: str) -> Path:
         return self.config.models_dir / filename
-
-    def _enrichment_model(self) -> Any:
-        return _get_model(
-            self._model_path(self.config.models.enrichment_model),
-            n_ctx=self.config.models.enrichment_ctx,
-        )
 
     def _tagger_model(self) -> Any:
         return _get_model(
@@ -271,83 +263,6 @@ Rules:
                 "entities": [],
             }
 
-    def enrich_block(self, block_text: str, existing_concepts: list[str]) -> dict:
-        """Extract atomic claims from a text block (simplified — no SPO).
-
-        Returns a dict with keys: claims, concepts, entities, related_slugs.
-        Each claim has: text, confidence, kind.
-        """
-        concept_list = (
-            ", ".join(existing_concepts[:50]) if existing_concepts else "none yet"
-        )
-
-        prompt = f"""Extract atomic claims from the following text block.
-
-Existing concepts in the knowledge base: [{concept_list}]
-
-TEXT BLOCK:
-{block_text}
-
-Return ONLY valid JSON:
-{{
-  "claims": [
-    {{
-      "text": "one atomic factual statement, task, or intention",
-      "confidence": 0.0 to 1.0,
-      "kind": "statement|task|intention|question|belief"
-    }}
-  ],
-  "concepts": ["concept-slug-1", "concept-slug-2"],
-  "entities": ["entity name 1"],
-  "related_slugs": ["existing-concept-slug"]
-}}
-
-Rules:
-- Each claim must be a single atomic statement in natural language.
-- Confidence: 1.0 = stated as fact, 0.5 = implied, 0.3 = speculative/hedged.
-- Kind: "statement" for facts, "task" for action items, "intention" for goals/plans, "question" for open questions, "belief" for opinions.
-- Concept slugs: lowercase, hyphens (e.g. "machine-learning"). Reuse existing slugs.
-- If the text has no extractable claims, return empty arrays.
-"""
-
-        model = self._enrichment_model()
-        t0 = time.monotonic()
-        response = model.create_chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a precise knowledge extraction system. Output ONLY valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=2048,
-            response_format={"type": "json_object"},
-        )
-        INFERENCE_SECONDS.labels(model_role="enrichment", task="enrich").observe(
-            time.monotonic() - t0
-        )
-        usage = response.get("usage", {})
-        if usage:
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(
-                usage.get("prompt_tokens", 0)
-            )
-            INFERENCE_TOKENS.labels(
-                model_role="enrichment", direction="completion"
-            ).inc(usage.get("completion_tokens", 0))
-
-        raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(
-            self.config, prompt, raw, self.config.models.enrichment_model, "enrich"
-        )
-
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            INFERENCE_JSON_FAILURES.labels(task="enrich").inc()
-            logger.warning("Failed to parse enrichment JSON, returning empty result")
-            return {"claims": [], "concepts": [], "entities": [], "related_slugs": []}
-
     def tag_block(self, block_text: str) -> dict:
         """Quick tagging pass using the smaller/faster model.
 
@@ -422,79 +337,6 @@ Return ONLY valid JSON:
             else:
                 out.append(np.array([r], dtype=np.float32))
         return out
-
-    def generate_wiki_section(
-        self, concept_title: str, new_evidence: list[str], existing_content: str
-    ) -> str:
-        """Generate a new evidence section for a wiki page."""
-        evidence_text = "\n".join(f"- {e}" for e in new_evidence)
-
-        # Truncate existing content to avoid blowing the context window.
-        # We only need recent sections for de-dup context — the prompt tells
-        # the model to summarize ONLY the new evidence, not the history.
-        # ~4000 chars ≈ 1000 tokens, leaving headroom under the 8192 ctx.
-        MAX_EXISTING_CHARS = 4000
-        truncated = existing_content or ""
-        if len(truncated) > MAX_EXISTING_CHARS:
-            tail = truncated[-MAX_EXISTING_CHARS:]
-            # Snap to the next section boundary so we don't start mid-sentence
-            boundary = tail.find("### Evidence")
-            if boundary != -1:
-                tail = tail[boundary:]
-            truncated = "(… earlier sections truncated …)\n\n" + tail
-
-        prompt = f"""You are maintaining a knowledge base wiki page for "{concept_title}".
-
-EXISTING PAGE CONTENT (LLM zone only, most recent sections):
-{truncated or "(empty — this is a new page)"}
-
-NEW EVIDENCE to integrate:
-{evidence_text}
-
-Summarize ONLY what the evidence above actually says. Rules:
-- Do NOT invent, infer, or add any information not present in the evidence
-- Do NOT speculate about implications, trends, or future developments
-- Stick strictly to the facts stated in the evidence
-- Use inline confidence pills like [c:0.82] after factual claims
-- Use [[concept-slug]] Obsidian links for cross-references when relevant
-- Write plain markdown — no code fences, no ```markdown``` blocks
-- Be concise: 2-4 sentences maximum
-
-Output ONLY the section content (no page frontmatter, no heading).
-"""
-        model = self._enrichment_model()
-        t0 = time.monotonic()
-        response = model.create_chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a wiki maintainer. Summarize ONLY what the evidence says. Never add information beyond what is provided. Write plain markdown, never wrap output in code fences.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=1024,
-        )
-        INFERENCE_SECONDS.labels(model_role="enrichment", task="wiki_section").observe(
-            time.monotonic() - t0
-        )
-        usage = response.get("usage", {})
-        if usage:
-            INFERENCE_TOKENS.labels(model_role="enrichment", direction="prompt").inc(
-                usage.get("prompt_tokens", 0)
-            )
-            INFERENCE_TOKENS.labels(
-                model_role="enrichment", direction="completion"
-            ).inc(usage.get("completion_tokens", 0))
-        raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(
-            self.config,
-            prompt,
-            raw,
-            self.config.models.enrichment_model,
-            "wiki_section",
-        )
-        return raw.strip()
 
     def extract_text_from_image(self, image_path: str) -> str:
         """OCR / caption an image using the VLM.

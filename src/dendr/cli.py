@@ -161,20 +161,10 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     """Reset block state and reprocess all daily notes from scratch.
 
     Clears the block_state table and the done queue so every block is
-    treated as new on the next ingest cycle. Existing claims, concepts,
-    and wiki pages are preserved — blocks that produce identical claims
-    will simply reinforce them.
+    treated as new on the next ingest cycle. Existing annotations,
+    concepts, and wiki pages are preserved — annotations will be
+    overwritten as blocks get re-tagged.
     """
-    # TODO: Think through and test reprocess edge cases:
-    #   - LLM non-determinism: same block may produce slightly different claims,
-    #     causing duplicates or false contradictions even with source_block_ref guard
-    #   - Concept evidence duplication: append_evidence adds sections even if
-    #     identical evidence already exists in the LLM zone
-    #   - Entity dedup: no embedding-based canonicalization for entities yet,
-    #     so "Sarah M." and "Sarah" create separate pages
-    #   - Consider adding a --entities-only flag that skips enrichment entirely
-    #     and only runs entity page creation from existing claims in the DB
-    #   - Need integration tests covering the full reprocess flow
     import shutil
 
     from dendr.config import Config
@@ -241,18 +231,21 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
     conn = dendr_db.connect(config.db_path)
     dendr_db.init_schema(conn)
 
-    results = []
+    results: list[dict] = []
+    seen_ids: set[str] = set()
 
     if mode in ("fts", "hybrid"):
-        fts = dendr_db.search_claims_fts(conn, query, limit=limit)
+        fts = dendr_db.search_annotations_fts(conn, query, limit=limit)
         for r in fts:
+            if r["block_id"] in seen_ids:
+                continue
+            seen_ids.add(r["block_id"])
             results.append(
                 {
-                    "id": r["id"],
-                    "text": r["text"],
-                    "concept": r["concept_slug"],
-                    "confidence": r["confidence"],
-                    "source": r["source_block_ref"],
+                    "block_id": r["block_id"],
+                    "gist": r["gist"],
+                    "source": r["source_file"],
+                    "date": r["source_date"],
                     "type": "fts",
                 }
             )
@@ -261,19 +254,20 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
         try:
             llm = LLMClient(config)
             emb = llm.embed(query)
-            sem = dendr_db.search_claims_semantic(conn, emb, limit=limit)
+            sem = dendr_db.search_annotations_semantic(conn, emb, limit=limit)
             for r in sem:
-                if not any(x["id"] == r["id"] for x in results):
-                    results.append(
-                        {
-                            "id": r["id"],
-                            "text": r["text"],
-                            "concept": r["concept_slug"],
-                            "confidence": r["confidence"],
-                            "source": r["source_block_ref"],
-                            "type": "semantic",
-                        }
-                    )
+                if r["block_id"] in seen_ids:
+                    continue
+                seen_ids.add(r["block_id"])
+                results.append(
+                    {
+                        "block_id": r["block_id"],
+                        "gist": r["gist"],
+                        "source": r["source_file"],
+                        "date": r["source_date"],
+                        "type": "semantic",
+                    }
+                )
         except Exception as e:
             click.echo(f"Semantic search unavailable: {e}", err=True)
 
@@ -284,9 +278,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
         return
 
     for r in results[:limit]:
-        click.echo(
-            f"  [{r['type']:8s}] (c={r['confidence']:.2f}) [{r['concept']}] {r['text'][:100]}"
-        )
+        click.echo(f"  [{r['type']:8s}] {r['date']}  {r['gist'][:120]}")
 
 
 @main.command()
@@ -338,9 +330,7 @@ def serve(data_dir: str | None, vault: str | None) -> None:
 )
 @click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
 @click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
-def digest(
-    data_dir: str | None, vault: str | None, weeks: int, claude: bool
-) -> None:
+def digest(data_dir: str | None, vault: str | None, weeks: int, claude: bool) -> None:
     """Generate a weekly digest briefing."""
     from dendr.config import Config
     from dendr.db import connect, init_schema
@@ -380,9 +370,9 @@ def stats(data_dir: str | None) -> None:
     pending = queue.pending_count(config)
     conn.close()
 
-    click.echo(f"Active claims:     {s['active_claims']}")
+    click.echo(f"Annotations:       {s['annotations']}")
     click.echo(f"Concepts:          {s['concepts']}")
-    click.echo(f"Challenged claims: {s['challenged_claims']}")
+    click.echo(f"Open tasks:        {s['open_tasks']}")
     click.echo(f"Pending queue:     {pending}")
 
 
@@ -506,7 +496,7 @@ def models() -> None:
 
 @models.command("pull")
 @click.option(
-    "--role", type=str, default=None, help="Download only this role (e.g. enrichment)"
+    "--role", type=str, default=None, help="Download only this role (e.g. tagger)"
 )
 @click.option("--force", is_flag=True, help="Re-download even if present")
 @click.option("--data-dir", type=click.Path(), default=None)
@@ -669,37 +659,34 @@ Both the local LLM and Claude read this on every session.
 - Weekly synthesis produced by Claude
 - Contains: key themes, notable changes, contradictions resolved
 
-## Claim Format
+## Block Annotation Format
 
-Every factual statement is stored as a claim with:
-- `text`: the atomic statement
-- `confidence`: 0.0-1.0 (inline as `[c:0.82]` in markdown)
-- `kind`: statement, task, intention, question, belief
-- `status`: created → reinforced → challenged → superseded
-- `source_block_ref`: link back to the daily note block
-- Deduplication via embedding similarity (semantic matching)
+Every block from a daily note is annotated with:
+- `gist`: one-line summary of what the block is about
+- `block_type`: reflection, task, decision, question, observation, vent, plan, log_entry
+- `life_areas`: which domains the block touches (work, health, etc.)
+- `emotional_valence`, `emotional_labels`, `intensity`: emotional signals
+- `urgency`, `importance`: only for tasks/plans, reflect state at source_date
+- `completion_status`: open, done, blocked, abandoned — updated via digest closure flow
+- `concepts`, `entities`: canonicalized slugs for cross-referencing
 
 ## Conventions
 
 - Slugs: lowercase, hyphens, no spaces (`machine-learning`, not `Machine Learning`)
 - Cross-references: use `[[slug]]` Obsidian wikilinks
-- Confidence pills: `[c:0.82]` after factual claims in markdown
-- Citations: `(from YYYY-MM-DD ^block-id)` after evidence
 - LLM zone: everything between `<!-- llm-zone -->` markers is system-managed
 - Human zone: everything between `<!-- human-zone -->` markers is sacred
 
 ## Lint Rules
 
-- Orphan pages: concept pages with zero active claims
-- Stale claims: not reinforced in 8+ weeks
-- Contradictions: semantically similar claims with conflicting content
+- Orphan pages: concept/entity pages referenced by zero annotations
 - Missing cross-refs: `[[slug]]` links pointing to non-existent pages
 
 ## Privacy
 
 - Blocks tagged `#dendr-private`, `#private`, or `#redact` are never sent to Claude
 - Blocks matching secret patterns (API keys, passwords) are auto-tagged private
-- Private claims are stored locally for search but excluded from Claude payloads
+- Private annotations are stored locally for search but excluded from Claude payloads
 """,
         encoding="utf-8",
     )
@@ -722,20 +709,17 @@ a personal knowledge wiki based on this week's activity.
 
 ## Your tasks
 1. Read the activity log for the past week
-2. Review any new contradictions flagged in the lint report
-3. For each contradiction: decide which claim to supersede, or flag as genuinely unresolved
-4. Update `weekly-digest.md` with a ≤8000 token synthesis of this week's knowledge gains
-5. Revise any stale summaries for heavily-updated concepts
-6. Write `summaries/weekly-YYYY-Www.md` for this week
+2. Update `weekly-digest.md` with a ≤8000 token synthesis of this week's patterns
+3. Revise any stale summaries for heavily-updated concepts
+4. Write `summaries/weekly-YYYY-Www.md` for this week
 
 ## Rules
 - NEVER read or reference raw daily notes — only the distilled wiki pages
 - NEVER modify the human-zone of any page
 - Keep the weekly digest under 8000 tokens
-- Use `[c:0.82]` confidence pills for factual claims
 - Use `[[concept-slug]]` for cross-references
 - Cite sources as `(from YYYY-MM-DD)`
-- Private claims (private=true) must NEVER appear in your output
+- Private annotations (private=true) must NEVER appear in your output
 
 ## Vault path: {config.vault_path}
 """,
@@ -755,11 +739,9 @@ accumulated knowledge, with citations.
 - Relevant concept pages
 
 ## Rules
-- Ground answers in wiki claims with citations: `(from YYYY-MM-DD ^block-id)`
-- Include confidence levels: "According to your notes [c:0.82], ..."
-- Flag contradictions: "Note: your notes contain conflicting information about..."
+- Ground answers in the user's annotations with citations: `(from YYYY-MM-DD ^block-id)`
 - If the answer would make a good wiki page, say so and offer to create it
-- NEVER include private claims in your answers
+- NEVER include private annotations in your answers
 - If you don't have enough information, say so honestly
 
 ## Vault path: {config.vault_path}

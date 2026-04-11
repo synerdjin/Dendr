@@ -18,7 +18,6 @@ from dendr.db import (
     set_page_hash,
     upsert_concept,
 )
-from dendr.llm import LLMClient
 from dendr.models import Concept, PageType
 
 logger = logging.getLogger(__name__)
@@ -148,81 +147,6 @@ def ensure_page(
     return page_path
 
 
-def append_evidence(
-    config: Config,
-    conn,
-    llm: LLMClient,
-    slug: str,
-    title: str,
-    new_evidence: list[str],
-    source_ref: str,
-    page_type: PageType = PageType.CONCEPT,
-) -> None:
-    """Append new evidence to a wiki page's LLM zone.
-
-    Respects human_touched: if the page was edited by the user, we only
-    append (never rewrite the LLM zone).
-    """
-    page_path = ensure_page(config, conn, slug, title, page_type)
-    rel_path = str(page_path.relative_to(config.vault_path))
-    content = page_path.read_text(encoding="utf-8")
-
-    stored_hash = get_page_hash(conn, rel_path)
-    human_touched = _is_human_touched(content, stored_hash)
-
-    if human_touched:
-        content = _update_frontmatter(content, "human_touched", "true")
-        logger.info("Page %s is human-touched, append-only mode", slug)
-
-    # Get existing LLM zone content
-    existing_zone = _extract_llm_zone(content)
-
-    # Skip if a section for this exact (date, source) already exists —
-    # multiple blocks from the same daily note would otherwise produce
-    # duplicate sections, and re-runs would compound the bloat.
-    now = datetime.now().strftime("%Y-%m-%d")
-    section_marker = f"### Evidence ({now}, from {source_ref})"
-    if section_marker in existing_zone:
-        logger.info("Skipping %s: section for %s already exists", slug, source_ref)
-        return
-
-    # Generate new section via local LLM
-    section_body = llm.generate_wiki_section(title, new_evidence, existing_zone)
-
-    # Skip if the LLM returned nothing — don't write a header with no body.
-    if not section_body.strip():
-        logger.warning(
-            "Skipping %s: LLM returned empty section body for %s", slug, source_ref
-        )
-        return
-
-    section_header = f"\n{section_marker}\n\n"
-    if human_touched:
-        # Append-only: add to end of LLM zone
-        new_zone = existing_zone + section_header + section_body
-    else:
-        # Can rewrite — but we still just append for incremental coherence
-        new_zone = existing_zone + section_header + section_body
-
-    # Replace the LLM zone
-    new_content = _replace_llm_zone(content, new_zone)
-    new_content = _update_frontmatter(new_content, "updated", now)
-
-    # Write and record hash
-    page_path.write_text(new_content, encoding="utf-8")
-    new_hash = _hash_content(new_content)
-    set_page_hash(conn, rel_path, new_hash)
-    new_content = _update_frontmatter(new_content, "last_llm_hash", new_hash)
-    page_path.write_text(new_content, encoding="utf-8")
-
-    append_log(
-        conn,
-        "evidence_added",
-        {"slug": slug, "source": source_ref, "claims_count": len(new_evidence)},
-    )
-    logger.info("Appended %d evidence items to %s", len(new_evidence), slug)
-
-
 def append_entity_observation(
     config: Config,
     conn,
@@ -302,14 +226,12 @@ def update_index(config: Config, conn) -> None:
             f"- [[{c['slug']}]] — {c['title']} *(updated {c['updated_at'][:10]})*"
         )
 
-    stats = conn.execute(
-        "SELECT COUNT(*) as n FROM claims WHERE status != 'superseded'"
-    ).fetchone()
+    stats = conn.execute("SELECT COUNT(*) as n FROM block_annotations").fetchone()
     lines.extend(
         [
             "",
             "---",
-            f"*{len(concepts)} pages, {stats['n']} active claims*",
+            f"*{len(concepts)} pages, {stats['n']} annotations*",
         ]
     )
 

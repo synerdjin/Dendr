@@ -1,12 +1,12 @@
 """Database schema and operations for Dendr's knowledge store.
 
 Tables:
-  - claims: atomic factual claims (simplified, no SPO — matched by embedding)
-  - block_annotations: rich per-block metadata for digest/synthesis
-  - concepts: canonical concept/entity slugs
+  - block_annotations: rich per-block metadata for digest/synthesis (primary artifact)
+  - concepts: canonical concept/entity slugs (used by wiki entity pages)
   - block_state: tracks which blocks have been processed
   - page_hashes: wiki page LLM-zone hashes for drift detection
   - feedback_scores: per-section digest feedback for learning
+  - task_events: lifecycle events for task/plan blocks
   - log: append-only activity log
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import BlockAnnotation, Claim, Concept
+from dendr.models import BlockAnnotation, Concept
 
 # sqlite-vec is loaded as an extension at runtime
 _VEC_LOADED = False
@@ -55,32 +55,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """Create all tables if they don't exist."""
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS claims (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            text            TEXT NOT NULL,
-            concept_slug    TEXT NOT NULL DEFAULT '',
-            source_block_ref TEXT NOT NULL,
-            source_file_hash TEXT NOT NULL DEFAULT '',
-            created_at      TEXT NOT NULL,
-            updated_at      TEXT NOT NULL,
-            confidence      REAL NOT NULL DEFAULT 0.5,
-            status          TEXT NOT NULL DEFAULT 'created',
-            superseded_by   INTEGER REFERENCES claims(id),
-            kind            TEXT NOT NULL DEFAULT 'statement',
-            private         INTEGER NOT NULL DEFAULT 0,
-            model_version   TEXT NOT NULL DEFAULT '',
-            prompt_version  TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_claims_concept
-            ON claims(concept_slug);
-        CREATE INDEX IF NOT EXISTS idx_claims_status
-            ON claims(status);
-        CREATE INDEX IF NOT EXISTS idx_claims_block
-            ON claims(source_block_ref);
-        CREATE INDEX IF NOT EXISTS idx_claims_kind
-            ON claims(kind);
-
         CREATE TABLE IF NOT EXISTS block_annotations (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
             block_id          TEXT NOT NULL UNIQUE,
@@ -182,18 +156,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # column already exists
 
-    # FTS5 for claims
-    try:
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts
-            USING fts5(text, concept_slug, content=claims, content_rowid=id)
-            """
-        )
-    except sqlite3.OperationalError:
-        pass
-
-    # FTS5 for annotations
+    # FTS5 for annotations (text search surface)
     try:
         conn.execute(
             """
@@ -204,15 +167,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
-    # sqlite-vec tables
-    try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS claims_vec "
-            "USING vec0(embedding float[768], claim_id integer)"
-        )
-    except sqlite3.OperationalError:
-        pass
-
+    # sqlite-vec for concept canonicalization + annotation embeddings
     try:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS concepts_vec "
@@ -221,131 +176,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
-
-# ── Claim operations ──────────────────────────────────────────────────
-
-
-def insert_claim(conn: sqlite3.Connection, claim: Claim) -> int:
-    """Insert a new claim and return its id."""
-    now = datetime.now().isoformat()
-    cur = conn.execute(
-        """
-        INSERT INTO claims (text, concept_slug, source_block_ref, source_file_hash,
-            created_at, updated_at, confidence, status, kind, private,
-            model_version, prompt_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            claim.text,
-            claim.concept_slug,
-            claim.source_block_ref,
-            claim.source_file_hash,
-            claim.created_at.isoformat() if claim.created_at else now,
-            now,
-            claim.confidence,
-            claim.status.value,
-            claim.kind.value,
-            int(claim.private),
-            claim.model_version,
-            claim.prompt_version,
-        ),
-    )
-    claim_id = cur.lastrowid
-    conn.execute(
-        "INSERT INTO claims_fts(rowid, text, concept_slug) VALUES (?, ?, ?)",
-        (claim_id, claim.text, claim.concept_slug),
-    )
-    return claim_id
-
-
-def insert_claim_embedding(
-    conn: sqlite3.Connection, claim_id: int, embedding: np.ndarray
-) -> None:
-    """Insert a vector embedding for a claim."""
-    conn.execute(
-        "INSERT INTO claims_vec(embedding, claim_id) VALUES (?, ?)",
-        (embedding.astype(np.float32).tobytes(), claim_id),
-    )
-
-
-def find_similar_claim_semantic(
-    conn: sqlite3.Connection,
-    embedding: np.ndarray,
-    similarity_threshold: float = 0.92,
-    top_k: int = 5,
-) -> sqlite3.Row | None:
-    """Find the most similar non-superseded claim by embedding.
-
-    Returns the best match above the threshold, or None.
-    """
     try:
-        vec_rows = conn.execute(
-            """
-            SELECT claim_id, distance FROM claims_vec
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?
-            """,
-            (embedding.astype(np.float32).tobytes(), top_k),
-        ).fetchall()
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS annotations_vec "
+            "USING vec0(embedding float[768], block_id text)"
+        )
     except sqlite3.OperationalError:
-        return None
-
-    for r in vec_rows:
-        similarity = 1.0 - r["distance"]
-        if similarity < similarity_threshold:
-            break
-        claim = conn.execute(
-            "SELECT * FROM claims WHERE id = ? AND status != 'superseded'",
-            (r["claim_id"],),
-        ).fetchone()
-        if claim:
-            return claim
-
-    return None
-
-
-def reinforce_claim(conn: sqlite3.Connection, claim_id: int) -> None:
-    """Mark an existing claim as reinforced, bump confidence."""
-    now = datetime.now().isoformat()
-    conn.execute(
-        """
-        UPDATE claims
-        SET status = 'reinforced', updated_at = ?,
-            confidence = MIN(confidence + 0.05, 1.0)
-        WHERE id = ?
-        """,
-        (now, claim_id),
-    )
-
-
-def supersede_claim(conn: sqlite3.Connection, old_id: int, new_id: int) -> None:
-    """Mark old claim as superseded by new one."""
-    now = datetime.now().isoformat()
-    conn.execute(
-        "UPDATE claims SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
-        (new_id, now, old_id),
-    )
-
-
-def challenge_claim(conn: sqlite3.Connection, claim_id: int) -> None:
-    """Mark a claim as challenged (contradiction detected)."""
-    now = datetime.now().isoformat()
-    conn.execute(
-        "UPDATE claims SET status = 'challenged', updated_at = ? WHERE id = ?",
-        (now, claim_id),
-    )
-
-
-def get_claims_for_concept(
-    conn: sqlite3.Connection, slug: str, include_private: bool = True
-) -> list[sqlite3.Row]:
-    """Get all active claims for a concept."""
-    q = "SELECT * FROM claims WHERE concept_slug = ? AND status != 'superseded'"
-    if not include_private:
-        q += " AND private = 0"
-    q += " ORDER BY confidence DESC"
-    return conn.execute(q, (slug,)).fetchall()
+        pass
 
 
 # ── Block annotation operations ───────────────────────────────────────
@@ -725,34 +562,49 @@ def get_task_lifecycle_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
-# ── FTS search ────────────────────────────────────────────────────────
+# ── Annotation search ─────────────────────────────────────────────────
 
 
-def search_claims_fts(
-    conn: sqlite3.Connection, query: str, limit: int = 50, include_private: bool = True
+def insert_annotation_embedding(
+    conn: sqlite3.Connection, block_id: str, embedding: np.ndarray
+) -> None:
+    """Insert or replace a block annotation's embedding."""
+    conn.execute("DELETE FROM annotations_vec WHERE block_id = ?", (block_id,))
+    conn.execute(
+        "INSERT INTO annotations_vec(embedding, block_id) VALUES (?, ?)",
+        (embedding.astype(np.float32).tobytes(), block_id),
+    )
+
+
+def search_annotations_fts(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 50,
+    include_private: bool = True,
 ) -> list[sqlite3.Row]:
+    """Full-text search across block annotations."""
     q = """
-        SELECT c.* FROM claims c
-        JOIN claims_fts f ON c.id = f.rowid
-        WHERE claims_fts MATCH ?
-          AND c.status != 'superseded'
+        SELECT ba.* FROM block_annotations ba
+        JOIN annotations_fts f ON ba.id = f.rowid
+        WHERE annotations_fts MATCH ?
     """
     if not include_private:
-        q += " AND c.private = 0"
+        q += " AND ba.private = 0"
     q += " LIMIT ?"
     return conn.execute(q, (query, limit)).fetchall()
 
 
-def search_claims_semantic(
+def search_annotations_semantic(
     conn: sqlite3.Connection,
     embedding: np.ndarray,
     limit: int = 50,
     include_private: bool = True,
 ) -> list[sqlite3.Row]:
+    """Semantic search across block annotations via annotations_vec."""
     try:
         vec_rows = conn.execute(
             """
-            SELECT claim_id, distance FROM claims_vec
+            SELECT block_id, distance FROM annotations_vec
             WHERE embedding MATCH ?
             ORDER BY distance
             LIMIT ?
@@ -765,10 +617,10 @@ def search_claims_semantic(
     if not vec_rows:
         return []
 
-    ids = [r["claim_id"] for r in vec_rows]
+    ids = [r["block_id"] for r in vec_rows]
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
-    q = f"SELECT * FROM claims WHERE id IN ({placeholders}) AND status != 'superseded'"
+    q = f"SELECT * FROM block_annotations WHERE block_id IN ({placeholders})"
     if not include_private:
         q += " AND private = 0"
     q += " LIMIT ?"
@@ -780,21 +632,21 @@ def search_claims_semantic(
 
 
 def get_stats(conn: sqlite3.Connection) -> dict:
-    claims_count = conn.execute(
-        "SELECT COUNT(*) as n FROM claims WHERE status != 'superseded'"
-    ).fetchone()["n"]
     concepts_count = conn.execute("SELECT COUNT(*) as n FROM concepts").fetchone()["n"]
-    challenged = conn.execute(
-        "SELECT COUNT(*) as n FROM claims WHERE status = 'challenged'"
-    ).fetchone()["n"]
     annotations_count = conn.execute(
         "SELECT COUNT(*) as n FROM block_annotations"
     ).fetchone()["n"]
+    open_tasks = conn.execute(
+        """
+        SELECT COUNT(*) as n FROM block_annotations
+        WHERE block_type IN ('task', 'plan')
+          AND (completion_status IS NULL OR completion_status = 'open')
+        """
+    ).fetchone()["n"]
     return {
-        "active_claims": claims_count,
         "concepts": concepts_count,
-        "challenged_claims": challenged,
         "annotations": annotations_count,
+        "open_tasks": open_tasks,
     }
 
 
@@ -967,90 +819,4 @@ def get_stale_tasks(
         ORDER BY source_date ASC
         """,
         (cutoff,),
-    ).fetchall()
-
-
-# Legacy digest queries (still used for claim-level data in Layer 3)
-
-
-def get_recent_claims(
-    conn: sqlite3.Connection, since: str, limit: int = 200
-) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT * FROM claims
-        WHERE created_at >= ? AND status != 'superseded' AND private = 0
-        ORDER BY created_at DESC
-        LIMIT ?
-        """,
-        (since, limit),
-    ).fetchall()
-
-
-def get_open_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT * FROM claims
-        WHERE kind IN ('task', 'intention')
-          AND status NOT IN ('superseded')
-          AND private = 0
-        ORDER BY created_at DESC
-        """,
-    ).fetchall()
-
-
-def get_concept_frequencies(
-    conn: sqlite3.Connection, since: str, limit: int = 20
-) -> list[tuple[str, int]]:
-    rows = conn.execute(
-        """
-        SELECT concept_slug, COUNT(*) as n FROM claims
-        WHERE created_at >= ? AND status != 'superseded' AND private = 0
-          AND concept_slug != ''
-        GROUP BY concept_slug
-        ORDER BY n DESC
-        LIMIT ?
-        """,
-        (since, limit),
-    ).fetchall()
-    return [(r["concept_slug"], r["n"]) for r in rows]
-
-
-def get_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
-    """Find contradictions via semantic similarity (challenged claims)."""
-    rows = conn.execute(
-        """
-        SELECT id, text, concept_slug, confidence, created_at, status
-        FROM claims
-        WHERE status = 'challenged' AND private = 0
-        ORDER BY created_at DESC
-        LIMIT 30
-        """
-    ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "text": r["text"],
-            "concept_slug": r["concept_slug"],
-            "confidence": r["confidence"],
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
-
-
-def get_dropped_threads(
-    conn: sqlite3.Connection, mentioned_once_before: str, limit: int = 10
-) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT c.concept_slug, c.text, c.created_at
-        FROM claims c
-        WHERE c.status != 'superseded' AND c.private = 0 AND c.concept_slug != ''
-        GROUP BY c.concept_slug
-        HAVING COUNT(*) = 1 AND MAX(c.created_at) < ?
-        ORDER BY c.created_at DESC
-        LIMIT ?
-        """,
-        (mentioned_once_before, limit),
     ).fetchall()

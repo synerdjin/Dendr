@@ -1,16 +1,14 @@
-"""Search server — localhost:7777 exposing FTS5 + semantic search.
-
-Claude Code and Obsidian plugins hit this for retrieval.
-"""
+"""Search server — localhost:7777 exposing FTS5 + semantic search over annotations."""
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import time
 
 from fastapi import FastAPI, Query, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from dendr import db
@@ -22,25 +20,29 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Dendr Search", version="0.1.0")
 
-# Module-level state (set by run_server)
 _config: Config | None = None
 _conn: sqlite3.Connection | None = None
 _llm: LLMClient | None = None
 
 
-class SearchResult(BaseModel):
-    claim_id: int
-    text: str
-    concept_slug: str
-    confidence: float
-    status: str
-    source_block_ref: str
+class AnnotationResult(BaseModel):
+    block_id: str
+    source_file: str
+    source_date: str
+    gist: str
+    block_type: str
+    life_areas: list[str]
+    concepts: list[str]
+    entities: list[str]
+    urgency: str | None = None
+    importance: str | None = None
+    completion_status: str | None = None
     score_type: str  # "fts" or "semantic"
 
 
 class SearchResponse(BaseModel):
     query: str
-    results: list[SearchResult]
+    results: list[AnnotationResult]
     total: int
 
 
@@ -51,9 +53,25 @@ class ConceptResult(BaseModel):
     page_path: str
 
 
+def _row_to_result(row: sqlite3.Row, score_type: str) -> AnnotationResult:
+    return AnnotationResult(
+        block_id=row["block_id"],
+        source_file=row["source_file"],
+        source_date=row["source_date"],
+        gist=row["gist"],
+        block_type=row["block_type"],
+        life_areas=json.loads(row["life_areas"] or "[]"),
+        concepts=json.loads(row["concepts"] or "[]"),
+        entities=json.loads(row["entities"] or "[]"),
+        urgency=row["urgency"],
+        importance=row["importance"],
+        completion_status=row["completion_status"],
+        score_type=score_type,
+    )
+
+
 @app.get("/metrics")
 def metrics() -> Response:
-    """Prometheus metrics endpoint."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -64,52 +82,34 @@ def search(
     limit: int = Query(20, ge=1, le=100),
     include_private: bool = Query(False),
 ) -> SearchResponse:
-    """Search claims via full-text, semantic, or hybrid."""
+    """Search block annotations via full-text, semantic, or hybrid."""
     assert _conn is not None and _llm is not None
     t0 = time.monotonic()
 
-    results: list[SearchResult] = []
-    seen_ids: set[int] = set()
+    results: list[AnnotationResult] = []
+    seen_ids: set[str] = set()
 
     if mode in ("fts", "hybrid"):
-        fts_rows = db.search_claims_fts(
+        fts_rows = db.search_annotations_fts(
             _conn, q, limit=limit, include_private=include_private
         )
         for row in fts_rows:
-            if row["id"] not in seen_ids:
-                seen_ids.add(row["id"])
-                results.append(
-                    SearchResult(
-                        claim_id=row["id"],
-                        text=row["text"],
-                        concept_slug=row["concept_slug"],
-                        confidence=row["confidence"],
-                        status=row["status"],
-                        source_block_ref=row["source_block_ref"],
-                        score_type="fts",
-                    )
-                )
+            if row["block_id"] in seen_ids:
+                continue
+            seen_ids.add(row["block_id"])
+            results.append(_row_to_result(row, "fts"))
 
     if mode in ("semantic", "hybrid"):
         try:
             query_emb = _llm.embed(q)
-            sem_rows = db.search_claims_semantic(
+            sem_rows = db.search_annotations_semantic(
                 _conn, query_emb, limit=limit, include_private=include_private
             )
             for row in sem_rows:
-                if row["id"] not in seen_ids:
-                    seen_ids.add(row["id"])
-                    results.append(
-                        SearchResult(
-                            claim_id=row["id"],
-                            text=row["text"],
-                            concept_slug=row["concept_slug"],
-                            confidence=row["confidence"],
-                            status=row["status"],
-                            source_block_ref=row["source_block_ref"],
-                            score_type="semantic",
-                        )
-                    )
+                if row["block_id"] in seen_ids:
+                    continue
+                seen_ids.add(row["block_id"])
+                results.append(_row_to_result(row, "semantic"))
         except Exception as e:
             logger.warning("Semantic search failed: %s", e)
 
@@ -119,7 +119,6 @@ def search(
 
 @app.get("/concepts", response_model=list[ConceptResult])
 def list_concepts() -> list[ConceptResult]:
-    """List all concepts."""
     assert _conn is not None
     rows = db.get_all_concepts(_conn)
     return [
@@ -133,34 +132,13 @@ def list_concepts() -> list[ConceptResult]:
     ]
 
 
-@app.get("/concept/{slug}/claims")
-def concept_claims(slug: str, include_private: bool = False) -> list[SearchResult]:
-    """Get all claims for a concept."""
-    assert _conn is not None
-    rows = db.get_claims_for_concept(_conn, slug, include_private=include_private)
-    return [
-        SearchResult(
-            claim_id=r["id"],
-            text=r["text"],
-            concept_slug=r["concept_slug"],
-            confidence=r["confidence"],
-            status=r["status"],
-            source_block_ref=r["source_block_ref"],
-            score_type="direct",
-        )
-        for r in rows
-    ]
-
-
 @app.get("/stats")
 def stats() -> dict:
-    """Get knowledge base statistics."""
     assert _conn is not None
     return db.get_stats(_conn)
 
 
 def run_server(config: Config) -> None:
-    """Start the search server."""
     import uvicorn
 
     global _config, _conn, _llm

@@ -6,9 +6,7 @@ from pathlib import Path
 
 from dendr.db import (
     connect,
-    get_dropped_threads,
     init_schema,
-    insert_claim,
 )
 from dendr.digest import (
     SectionFeedback,
@@ -21,7 +19,7 @@ from dendr.digest import (
     parse_feedback,
     render_local_digest,
 )
-from dendr.models import BlockAnnotation, BlockType, Claim, ClaimKind, ClaimStatus
+from dendr.models import BlockAnnotation, BlockType
 
 
 def _temp_db():
@@ -30,23 +28,6 @@ def _temp_db():
     conn = connect(Path(f.name))
     init_schema(conn)
     return conn
-
-
-def _make_claim(**kwargs) -> Claim:
-    defaults = dict(
-        id=None,
-        text="Test claim",
-        concept_slug="test-concept",
-        source_block_ref="block-1",
-        source_file_hash="abc123",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        confidence=0.8,
-        status=ClaimStatus.CREATED,
-        kind=ClaimKind.STATEMENT,
-    )
-    defaults.update(kwargs)
-    return Claim(**defaults)
 
 
 def _make_annotation(**kwargs) -> BlockAnnotation:
@@ -68,57 +49,6 @@ def _make_annotation(**kwargs) -> BlockAnnotation:
     return BlockAnnotation(**defaults)
 
 
-def test_claim_kind_persisted():
-    conn = _temp_db()
-    claim = _make_claim(kind=ClaimKind.TASK, text="Fix the CI pipeline")
-    cid = insert_claim(conn, claim)
-    row = conn.execute("SELECT kind FROM claims WHERE id = ?", (cid,)).fetchone()
-    assert row["kind"] == "task"
-
-
-def test_claim_kind_default():
-    conn = _temp_db()
-    claim = _make_claim()
-    cid = insert_claim(conn, claim)
-    row = conn.execute("SELECT kind FROM claims WHERE id = ?", (cid,)).fetchone()
-    assert row["kind"] == "statement"
-
-
-def test_get_dropped_threads():
-    conn = _temp_db()
-    old = datetime.now() - timedelta(weeks=3)
-
-    insert_claim(
-        conn,
-        _make_claim(
-            concept_slug="forgotten-topic",
-            text="Some note about X",
-            created_at=old,
-        ),
-    )
-    insert_claim(
-        conn,
-        _make_claim(
-            concept_slug="active-topic",
-            text="First mention",
-            created_at=old,
-        ),
-    )
-    insert_claim(
-        conn,
-        _make_claim(
-            concept_slug="active-topic",
-            text="Second mention",
-        ),
-    )
-
-    before = (datetime.now() - timedelta(weeks=2)).isoformat()
-    dropped = get_dropped_threads(conn, before)
-    slugs = [r["concept_slug"] for r in dropped]
-    assert "forgotten-topic" in slugs
-    assert "active-topic" not in slugs
-
-
 def test_render_local_digest_with_annotations():
     """render_local_digest produces valid markdown from annotation-based data."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -128,10 +58,9 @@ def test_render_local_digest_with_annotations():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": today,
         "stats": {
-            "active_claims": 42,
             "concepts": 10,
-            "challenged_claims": 2,
             "annotations": 15,
+            "open_tasks": 1,
         },
         "narrative_blocks": [
             {
@@ -196,22 +125,6 @@ def test_render_local_digest_with_annotations():
             "completed_recently": [],
             "stale_tasks": [],
         },
-        "contradictions": [
-            {
-                "id": 1,
-                "text": "X uses Postgres",
-                "concept_slug": "database",
-                "confidence": 0.8,
-                "created_at": datetime.now().isoformat(),
-            },
-        ],
-        "dropped_threads": [
-            {
-                "concept_slug": "forgotten",
-                "text": "Something about X",
-                "created_at": (datetime.now() - timedelta(weeks=3)).isoformat(),
-            },
-        ],
         "section_effectiveness": {},
     }
 
@@ -225,9 +138,6 @@ def test_render_local_digest_with_annotations():
     assert "Patterns" in result
     assert "[[burnout]]" in result
     assert "work: 65%" in result
-    assert "Contradictions" in result
-    assert "Dropped Threads" in result
-    assert "[[forgotten]]" in result
     assert "feedback:" in result
 
 
@@ -237,10 +147,9 @@ def test_render_local_digest_empty():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": datetime.now().strftime("%Y-%m-%d"),
         "stats": {
-            "active_claims": 0,
             "concepts": 0,
-            "challenged_claims": 0,
             "annotations": 0,
+            "open_tasks": 0,
         },
         "narrative_blocks": [],
         "patterns": {
@@ -251,8 +160,6 @@ def test_render_local_digest_empty():
             "completed_recently": [],
             "stale_tasks": [],
         },
-        "contradictions": [],
-        "dropped_threads": [],
         "section_effectiveness": {},
     }
 
@@ -267,10 +174,9 @@ def test_build_synthesis_prompt():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": datetime.now().strftime("%Y-%m-%d"),
         "stats": {
-            "active_claims": 5,
             "concepts": 2,
-            "challenged_claims": 0,
             "annotations": 3,
+            "open_tasks": 0,
         },
         "narrative_blocks": [
             {
@@ -300,8 +206,6 @@ def test_build_synthesis_prompt():
             "completed_recently": [],
             "stale_tasks": [],
         },
-        "contradictions": [],
-        "dropped_threads": [],
         "section_effectiveness": {"narrative": 0.8},
     }
 
@@ -401,10 +305,9 @@ def test_render_task_review_empty_with_fresh_only():
         "period_start": today,
         "period_end": today,
         "stats": {
-            "active_claims": 0,
             "concepts": 0,
-            "challenged_claims": 0,
             "annotations": 1,
+            "open_tasks": 1,
         },
         "narrative_blocks": [],
         "patterns": {
@@ -425,8 +328,6 @@ def test_render_task_review_empty_with_fresh_only():
             "completed_recently": [],
             "stale_tasks": [],
         },
-        "contradictions": [],
-        "dropped_threads": [],
         "section_effectiveness": {},
     }
     result = render_local_digest(data)
@@ -486,10 +387,9 @@ def test_render_local_digest_includes_task_review_section():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": today,
         "stats": {
-            "active_claims": 0,
             "concepts": 0,
-            "challenged_claims": 0,
             "annotations": 1,
+            "open_tasks": 1,
         },
         "narrative_blocks": [],
         "patterns": {
@@ -510,8 +410,6 @@ def test_render_local_digest_includes_task_review_section():
             "completed_recently": [],
             "stale_tasks": [],
         },
-        "contradictions": [],
-        "dropped_threads": [],
         "section_effectiveness": {},
     }
     result = render_local_digest(data)
@@ -565,22 +463,15 @@ def test_annotation_to_dict_age_days():
     assert d["source_date"] == eight_days_ago
 
 
-def test_ingest_feedback_creates_claims():
+def test_ingest_feedback_logs_ratings():
     conn = _temp_db()
     feedback = [
         SectionFeedback(section="open-loops", useful=True, note="CI task is done"),
-        SectionFeedback(section="contradictions", useful=False, note=""),
+        SectionFeedback(section="patterns", useful=False, note=""),
     ]
 
     stats = ingest_feedback(conn, feedback, "2026-04-10")
     assert stats["logged_ratings"] == 2
-    assert stats["ingested_claims"] == 1
-
-    rows = conn.execute(
-        "SELECT * FROM claims WHERE source_block_ref LIKE 'digest-feedback%'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert rows[0]["text"] == "CI task is done"
 
     fb_rows = conn.execute("SELECT * FROM feedback_scores").fetchall()
     assert len(fb_rows) == 2

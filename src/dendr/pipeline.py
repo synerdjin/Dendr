@@ -1,12 +1,11 @@
 """Core ingestion pipeline — orchestrates the full block-to-wiki flow.
 
 Annotation-first architecture:
-  1. Parse daily notes, find dirty blocks
-  2. Annotate blocks (tagger model — fast, always runs)
-  3. Embed annotations for semantic search
-  4. Extract claims (enrichment model — optional, skip in backpressure)
-  5. Semantic claim dedup (replaces exact-match SPO)
-  6. Wiki page update
+  1. Reconcile closures from digest.md
+  2. Parse daily notes, find dirty blocks
+  3. Annotate blocks (tagger model)
+  4. Canonicalize concepts/entities + embed annotation text
+  5. Commit annotations, annotation embeddings, wiki pages
 """
 
 from __future__ import annotations
@@ -17,26 +16,16 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from dendr import db, queue
 from dendr.canonicalize import canonicalize_concepts
 from dendr.config import Config
-from dendr.enrichment import enrich_block
 from dendr.llm import LLMClient
-from dendr.metrics import (
-    BACKPRESSURE_ACTIVE,
-    BLOCKS_PROCESSED,
-    CLAIMS_EXTRACTED,
-    CLAIMS_REINFORCED,
-    INGEST_CYCLE_SECONDS,
-)
+from dendr.metrics import BLOCKS_PROCESSED, INGEST_CYCLE_SECONDS
 from dendr.models import (
     Block,
     BlockAnnotation,
     BlockType,
-    Claim,
-    ClaimStatus,
     PageType,
     QueueItem,
 )
@@ -45,7 +34,6 @@ from dendr.privacy import filter_blocks
 from dendr.wiki import (
     append_activity_log,
     append_entity_observation,
-    append_evidence,
     ensure_page,
     update_index,
 )
@@ -187,33 +175,17 @@ def _track_task_lifecycle(
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
-    """Process all pending queue items through the annotation + enrichment pipeline.
+    """Process pending queue items through annotation + canonicalization.
 
-    Three phases to minimize GPU model swaps:
-      Phase 1 (tagger model):     annotate all blocks
-      Phase 2 (embedding model):  embed + canonicalize concepts
-      Phase 3 (enrichment model): extract claims + generate wiki sections
+    Phase 1 (tagger model):    annotate all blocks
+    Phase 2 (embedding model): canonicalize concepts/entities + embed annotation text
+    Phase 3 (DB commit):       persist annotations, embeddings, wiki pages
     """
     queue.recover_stale(config)
     pending = queue.get_pending(config)
     if not pending:
         return 0
 
-    total_pending = len(pending)
-    estimated_days = total_pending / 20
-    shallow = estimated_days > config.backpressure_days
-    BACKPRESSURE_ACTIVE.set(1 if shallow else 0)
-
-    if shallow:
-        logger.warning(
-            "Backpressure: ~%.0f days queued (threshold: %d). Skipping claim extraction.",
-            estimated_days,
-            config.backpressure_days,
-        )
-
-    existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
-
-    # Claim all items for processing
     claimed: list[QueueItem] = []
     for item in pending:
         if queue.claim_for_processing(config, item.block_id):
@@ -239,19 +211,19 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         except Exception as e:
             logger.error("Failed to annotate block %s: %s", item.block_id, e)
 
-    # ── Phase 2a: Embedding + canonicalization (embedding model) ────────
+    # ── Phase 2: Canonicalize + embed annotation text (embedding model) ──
     total2 = len(annotated)
-    logger.info("Phase 2/3: embedding & canonicalizing %d blocks", total2)
+    logger.info("Phase 2/3: canonicalizing & embedding %d blocks", total2)
 
     phase2: dict[
-        str, tuple[QueueItem, BlockAnnotation, dict[str, str], dict[str, str]]
+        str,
+        tuple[QueueItem, BlockAnnotation, dict[str, str], dict[str, str], bytes | None],
     ] = {}
-    enriched: dict[str, Any] = {}
 
     for idx2, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
         try:
             logger.info(
-                "Phase 2a/3: canonicalizing block %d/%d: %s", idx2, total2, block_id
+                "Phase 2/3: canonicalizing block %d/%d: %s", idx2, total2, block_id
             )
             slug_map = canonicalize_concepts(
                 annotation.concepts, llm, conn, config, page_type="concept"
@@ -259,155 +231,61 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             entity_slug_map = canonicalize_concepts(
                 annotation.entities, llm, conn, config, page_type="entity"
             )
-            phase2[block_id] = (item, annotation, slug_map, entity_slug_map)
-        except Exception as e:
-            logger.error("Failed in phase 2a for block %s: %s", block_id, e)
-
-    # ── Phase 2b: Enrichment / claim extraction (enrichment model) ───
-    enrichment_results: dict[str, Any] = {}
-    if not shallow:
-        enrich_total = len(phase2)
-        logger.info("Phase 2b/3: enriching %d blocks", enrich_total)
-        for idx2b, (block_id, (item, annotation, slug_map, _entity_map)) in enumerate(
-            phase2.items(), 1
-        ):
+            embed_text = annotation.gist or item.block_text
             try:
-                logger.info(
-                    "Phase 2b/3: enriching block %d/%d: %s",
-                    idx2b,
-                    enrich_total,
-                    block_id,
-                )
-                block = Block(
-                    block_id=item.block_id,
-                    source_file=item.source_file,
-                    line_start=0,
-                    line_end=0,
-                    text=item.block_text,
-                    block_hash=item.block_hash,
-                    private=item.private,
-                    attachment_path=item.attachment_path,
-                    attachment_type=item.attachment_type,
-                )
-                result = enrich_block(block, llm, existing_concepts)
-                enrichment_results[block_id] = (result, slug_map)
+                ann_embedding = llm.embed(embed_text)
             except Exception as e:
-                logger.error("Failed in phase 2b for block %s: %s", block_id, e)
+                logger.warning("Failed to embed annotation %s: %s", block_id, e)
+                ann_embedding = None
+            phase2[block_id] = (
+                item,
+                annotation,
+                slug_map,
+                entity_slug_map,
+                ann_embedding,
+            )
+        except Exception as e:
+            logger.error("Failed in phase 2 for block %s: %s", block_id, e)
 
-    # ── Phase 2c: Embed claims for semantic dedup (embedding model) ──
-    if enrichment_results:
-        logger.info(
-            "Phase 2c/3: embedding claims for %d blocks", len(enrichment_results)
-        )
-        for block_id, (result, slug_map) in enrichment_results.items():
-            claim_embeddings: dict[int, Any] = {}
-            for i, claim_data in enumerate(result.claims):
-                try:
-                    claim_embeddings[i] = llm.embed(claim_data.text)
-                except Exception as e:
-                    logger.warning("Failed to embed claim: %s", e)
-            enriched[block_id] = (result, slug_map, claim_embeddings)
-
-    # ── Phase 3: Commit annotations + claims + wiki ───────────────────
+    # ── Phase 3: Commit annotations + wiki ────────────────────────────
     total3 = len(phase2)
     logger.info("Phase 3/3: committing %d blocks", total3)
     processed = 0
 
-    for block_id, (item, annotation, slug_map, entity_slug_map) in phase2.items():
+    for block_id, (
+        item,
+        annotation,
+        slug_map,
+        entity_slug_map,
+        ann_embedding,
+    ) in phase2.items():
         try:
             conn.execute("BEGIN")
             try:
-                # Track task lifecycle before upserting
                 _track_task_lifecycle(conn, annotation)
 
-                # Store annotation
                 db.upsert_block_annotation(conn, annotation)
+
+                if ann_embedding is not None:
+                    try:
+                        db.insert_annotation_embedding(
+                            conn, item.block_id, ann_embedding
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to store annotation embedding %s: %s",
+                            block_id,
+                            e,
+                        )
 
                 source_ref = Path(item.source_file).stem
 
-                # Process claims (if enrichment ran)
-                if block_id in enriched:
-                    result, slug_map, claim_embeddings = enriched[block_id]
-
-                    for i, claim_data in enumerate(result.claims):
-                        concept_slug = ""
-                        for c in claim_data.concepts:
-                            if c in slug_map:
-                                concept_slug = slug_map[c]
-                                break
-                        if not concept_slug and slug_map:
-                            concept_slug = next(iter(slug_map.values()))
-
-                        # Semantic dedup: check if similar claim exists
-                        if i in claim_embeddings:
-                            existing = db.find_similar_claim_semantic(
-                                conn, claim_embeddings[i], similarity_threshold=0.92
-                            )
-                            if existing:
-                                # Only reinforce if evidence comes from a different block
-                                if existing["source_block_ref"] != item.block_id:
-                                    db.reinforce_claim(conn, existing["id"])
-                                    CLAIMS_REINFORCED.inc()
-                                continue
-
-                        claim = Claim(
-                            id=None,
-                            text=claim_data.text,
-                            concept_slug=concept_slug,
-                            source_block_ref=item.block_id,
-                            source_file_hash=item.block_hash,
-                            created_at=datetime.now(),
-                            updated_at=datetime.now(),
-                            confidence=claim_data.confidence,
-                            status=ClaimStatus.CREATED,
-                            kind=claim_data.kind,
-                            private=item.private,
-                            model_version=result.model_version,
-                            prompt_version=result.prompt_version,
-                        )
-                        new_id = db.insert_claim(conn, claim)
-                        CLAIMS_EXTRACTED.inc()
-
-                        if i in claim_embeddings:
-                            db.insert_claim_embedding(conn, new_id, claim_embeddings[i])
-
-                # Update wiki pages for concepts
+                # Ensure concept pages exist (no LLM rewriting).
                 for candidate, slug in slug_map.items():
                     title = candidate.replace("-", " ").title()
-                    evidence = []
-                    if block_id in enriched:
-                        result_data = enriched[block_id][0]
-                        evidence = [
-                            c.text
-                            for c in result_data.claims
-                            if any(
-                                cc in slug_map and slug_map[cc] == slug
-                                for cc in c.concepts
-                            )
-                        ]
-
-                    # Always ensure the page exists so it can be linked to,
-                    # but skip the LLM section write if there's no real claim
-                    # evidence — otherwise we burn tokens producing
-                    # "X was referenced on date Y" filler.
                     ensure_page(config, conn, slug, title, PageType.CONCEPT)
-                    if not evidence:
-                        continue
 
-                    append_evidence(
-                        config,
-                        conn,
-                        llm,
-                        slug,
-                        title,
-                        evidence,
-                        source_ref,
-                        PageType.CONCEPT,
-                    )
-
-                # Update wiki pages for entities — entity pages just collect
-                # block gists (no LLM rewriting), enabling entity-centric
-                # retrieval like "what have I noted about Tim Urban".
+                # Ensure entity pages exist and append gist observations.
                 for ent_candidate, ent_slug in entity_slug_map.items():
                     ent_title = ent_candidate.strip()
                     ensure_page(config, conn, ent_slug, ent_title, PageType.ENTITY)
@@ -443,9 +321,8 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             logger.error("Failed to process block %s: %s", item.block_id, e)
             continue
 
-    existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
-
     if processed > 0:
+        existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
         update_index(config, conn)
         append_activity_log(
             config,
