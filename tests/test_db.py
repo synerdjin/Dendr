@@ -5,33 +5,27 @@ from datetime import datetime
 from pathlib import Path
 
 from dendr.db import (
-    connect,
-    init_schema,
-    insert_claim,
-    insert_task_event,
-    get_task_lifecycle_stats,
-    reinforce_claim,
-    supersede_claim,
-    upsert_concept,
-    upsert_block_annotation,
-    get_block_annotation,
     append_log,
-    search_claims_fts,
-    get_stats,
-    upsert_block_state,
+    connect,
+    get_block_annotation,
     get_block_state,
-    get_significant_blocks,
-    get_open_tasks_annotated,
-    get_life_area_distribution,
     get_emotional_trajectory,
-    upsert_feedback_score,
+    get_life_area_distribution,
+    get_open_tasks_annotated,
     get_section_effectiveness,
+    get_significant_blocks,
+    get_stats,
+    get_task_lifecycle_stats,
+    init_schema,
+    insert_task_event,
+    upsert_block_annotation,
+    upsert_block_state,
+    upsert_concept,
+    upsert_feedback_score,
 )
 from dendr.models import (
     BlockAnnotation,
     BlockType,
-    Claim,
-    ClaimStatus,
     Concept,
     PageType,
 )
@@ -43,22 +37,6 @@ def _temp_db():
     conn = connect(Path(f.name))
     init_schema(conn)
     return conn
-
-
-def _make_claim(**kwargs) -> Claim:
-    defaults = dict(
-        id=None,
-        text="Test claim",
-        concept_slug="test-concept",
-        source_block_ref="block-1",
-        source_file_hash="abc123",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        confidence=0.8,
-        status=ClaimStatus.CREATED,
-    )
-    defaults.update(kwargs)
-    return Claim(**defaults)
 
 
 def _make_annotation(**kwargs) -> BlockAnnotation:
@@ -80,54 +58,12 @@ def _make_annotation(**kwargs) -> BlockAnnotation:
     return BlockAnnotation(**defaults)
 
 
-def test_insert_and_find_claim():
+def test_stats_empty():
     conn = _temp_db()
-    claim = _make_claim()
-    claim_id = insert_claim(conn, claim)
-    assert claim_id > 0
-
-
-def test_reinforce_claim():
-    conn = _temp_db()
-    c = _make_claim(confidence=0.7)
-    cid = insert_claim(conn, c)
-    reinforce_claim(conn, cid)
-
-    row = conn.execute("SELECT * FROM claims WHERE id = ?", (cid,)).fetchone()
-    assert row["status"] == "reinforced"
-    assert row["confidence"] > 0.7
-
-
-def test_supersede_claim():
-    conn = _temp_db()
-    c1 = _make_claim(text="old claim")
-    id1 = insert_claim(conn, c1)
-    c2 = _make_claim(text="new claim")
-    id2 = insert_claim(conn, c2)
-
-    supersede_claim(conn, id1, id2)
-    row = conn.execute("SELECT * FROM claims WHERE id = ?", (id1,)).fetchone()
-    assert row["status"] == "superseded"
-    assert row["superseded_by"] == id2
-
-
-def test_fts_search():
-    conn = _temp_db()
-    c = _make_claim(text="machine learning is powerful", concept_slug="ml")
-    insert_claim(conn, c)
-
-    results = search_claims_fts(conn, "machine learning")
-    assert len(results) >= 1
-    assert results[0]["concept_slug"] == "ml"
-
-
-def test_stats():
-    conn = _temp_db()
-    insert_claim(conn, _make_claim())
     s = get_stats(conn)
-    assert s["active_claims"] == 1
     assert s["concepts"] == 0
     assert s["annotations"] == 0
+    assert s["open_tasks"] == 0
 
 
 def test_block_state():
@@ -344,10 +280,3 @@ def test_task_lifecycle_abandoned():
     assert stats["total_abandoned"] == 1
     assert stats["total_completed"] == 0
     assert stats["completion_rate"] == 0.0
-
-
-def test_stats_includes_annotations():
-    conn = _temp_db()
-    upsert_block_annotation(conn, _make_annotation())
-    s = get_stats(conn)
-    assert s["annotations"] == 1

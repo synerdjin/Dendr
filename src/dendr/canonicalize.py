@@ -38,44 +38,60 @@ def canonicalize_concept(
     llm: LLMClient,
     conn: sqlite3.Connection,
     config: Config,
+    page_type: str = "concept",
 ) -> str:
-    """Resolve a candidate concept name to a canonical slug.
+    """Resolve a candidate name to a canonical slug for the given page_type.
 
     Returns an existing slug if a near-match exists (cosine >= threshold),
-    otherwise creates and returns a new slug.
+    otherwise creates and returns a new slug. Concepts and entities are
+    canonicalized in separate namespaces — a concept and entity that
+    happen to slugify identically would collide on the slug PK, so on
+    cross-type collision we log and skip rather than corrupt the row.
     """
     slug = _slugify(candidate)
     if not slug:
         return ""
 
-    # Check exact match first (cheap)
+    # Exact match in the same page_type namespace
     existing = conn.execute(
-        "SELECT slug FROM concepts WHERE slug = ?", (slug,)
+        "SELECT slug, page_type FROM concepts WHERE slug = ?", (slug,)
     ).fetchone()
     if existing:
-        return existing["slug"]
+        if existing["page_type"] == page_type:
+            return existing["slug"]
+        # Cross-type collision: the slug is already in use by a different
+        # page_type. Skip rather than overwrite the existing row.
+        logger.warning(
+            "Slug '%s' already exists as %s; skipping %s candidate '%s'",
+            slug,
+            existing["page_type"],
+            page_type,
+            candidate,
+        )
+        return ""
 
     # Embed the candidate
     embedding = llm.embed(candidate)
 
-    # ANN search existing concepts
-    nearest = find_nearest_concept(conn, embedding, top_k=3)
+    # ANN search within the same page_type
+    nearest = find_nearest_concept(conn, embedding, top_k=3, page_type=page_type)
 
     for existing_slug, distance in nearest:
         similarity = _cosine_distance_to_similarity(distance)
         if similarity >= config.canonicalization_threshold:
             logger.info(
-                "Canonicalized '%s' → '%s' (similarity=%.3f)",
+                "Canonicalized '%s' → '%s' (similarity=%.3f, %s)",
                 candidate,
                 existing_slug,
                 similarity,
+                page_type,
             )
             CANONICALIZATION_REUSE.inc()
             return existing_slug
 
-    # No match — this is a genuinely new concept. Store its embedding.
+    # No match — this is a genuinely new slug. Store its embedding.
     insert_concept_embedding(conn, slug, embedding)
-    logger.info("New concept slug: '%s'", slug)
+    logger.info("New %s slug: '%s'", page_type, slug)
     CANONICALIZATION_NEW.inc()
     return slug
 
@@ -85,8 +101,9 @@ def canonicalize_concepts(
     llm: LLMClient,
     conn: sqlite3.Connection,
     config: Config,
+    page_type: str = "concept",
 ) -> dict[str, str]:
-    """Canonicalize a batch of concept candidates.
+    """Canonicalize a batch of candidates.
 
     Returns a mapping of {original_candidate: canonical_slug}.
     """
@@ -94,7 +111,7 @@ def canonicalize_concepts(
     for candidate in candidates:
         if not candidate.strip():
             continue
-        slug = canonicalize_concept(candidate, llm, conn, config)
+        slug = canonicalize_concept(candidate, llm, conn, config, page_type=page_type)
         if slug:
             result[candidate] = slug
     return result

@@ -70,30 +70,10 @@ BLOCKS_PROCESSED = Counter(
     "Total blocks successfully processed",
 )
 
-CLAIMS_EXTRACTED = Counter(
-    "dendr_claims_extracted_total",
-    "Total claims extracted from blocks",
-)
-
-CLAIMS_REINFORCED = Counter(
-    "dendr_claims_reinforced_total",
-    "Total claims reinforced (duplicate seen again)",
-)
-
-CONTRADICTIONS_DETECTED = Counter(
-    "dendr_contradictions_detected_total",
-    "Total contradictions detected between claims",
-)
-
 INGEST_CYCLE_SECONDS = Histogram(
     "dendr_ingest_cycle_seconds",
     "Duration of a full ingest cycle",
     buckets=(1, 5, 10, 30, 60, 120, 300, 600),
-)
-
-BACKPRESSURE_ACTIVE = Gauge(
-    "dendr_backpressure_active",
-    "1 if backpressure (shallow enrichment) mode is active",
 )
 
 # ---------------------------------------------------------------------------
@@ -122,9 +102,9 @@ SEARCH_REQUEST_SECONDS = Histogram(
 # ---------------------------------------------------------------------------
 # Knowledge base gauges (updated periodically)
 # ---------------------------------------------------------------------------
-ACTIVE_CLAIMS = Gauge(
-    "dendr_active_claims",
-    "Total active claims in the knowledge base",
+ANNOTATIONS_TOTAL = Gauge(
+    "dendr_annotations_total",
+    "Total block annotations in the knowledge base",
 )
 
 CONCEPTS_TOTAL = Gauge(
@@ -172,7 +152,7 @@ def collect_db_metrics(conn) -> None:
         from dendr import db
 
         stats = db.get_stats(conn)
-        ACTIVE_CLAIMS.set(stats.get("active_claims", 0))
+        ANNOTATIONS_TOTAL.set(stats.get("annotations", 0))
         CONCEPTS_TOTAL.set(stats.get("concepts", 0))
     except Exception as e:
         logger.debug("Failed to collect DB metrics: %s", e)

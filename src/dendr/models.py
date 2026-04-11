@@ -7,21 +7,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
-class ClaimStatus(str, enum.Enum):
-    CREATED = "created"
-    REINFORCED = "reinforced"
-    CHALLENGED = "challenged"
-    SUPERSEDED = "superseded"
-
-
-class ClaimKind(str, enum.Enum):
-    STATEMENT = "statement"
-    TASK = "task"
-    INTENTION = "intention"
-    QUESTION = "question"
-    BELIEF = "belief"
-
-
 class BlockType(str, enum.Enum):
     REFLECTION = "reflection"
     TASK = "task"
@@ -78,51 +63,6 @@ class BlockAnnotation:
     causal_links: list[str] = field(default_factory=list)
     concepts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
-    private: bool = False
-    model_version: str = ""
-    prompt_version: str = ""
-
-
-@dataclass
-class ExtractedClaim:
-    """An atomic claim extracted by the local LLM (simplified — no SPO)."""
-
-    text: str
-    confidence: float
-    kind: ClaimKind = ClaimKind.STATEMENT
-    concepts: list[str] = field(default_factory=list)
-
-
-@dataclass
-class EnrichmentResult:
-    """Full enrichment output for a single block."""
-
-    block_id: str
-    block_hash: str
-    source_file: str
-    claims: list[ExtractedClaim] = field(default_factory=list)
-    concepts: list[str] = field(default_factory=list)
-    entities: list[str] = field(default_factory=list)
-    related_slugs: list[str] = field(default_factory=list)
-    model_version: str = ""
-    prompt_version: str = ""
-
-
-@dataclass
-class Claim:
-    """A persisted claim in the store (simplified — no SPO fields)."""
-
-    id: int | None
-    text: str
-    concept_slug: str
-    source_block_ref: str
-    source_file_hash: str
-    created_at: datetime
-    updated_at: datetime
-    confidence: float
-    status: ClaimStatus
-    kind: ClaimKind = ClaimKind.STATEMENT
-    superseded_by: int | None = None
     private: bool = False
     model_version: str = ""
     prompt_version: str = ""
