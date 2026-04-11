@@ -249,7 +249,6 @@ def upsert_block_annotation(conn: sqlite3.Connection, ann: BlockAnnotation) -> i
     )
     ann_id = cur.lastrowid
 
-    # Sync FTS
     try:
         conn.execute(
             "INSERT OR REPLACE INTO annotations_fts(rowid, original_text, gist) VALUES (?, ?, ?)",
@@ -536,7 +535,6 @@ def get_task_lifecycle_stats(conn: sqlite3.Connection) -> dict:
         round(total_completed / total_created, 2) if total_created > 0 else 0.0
     )
 
-    # Average days to completion
     avg_days_rows = conn.execute(
         """
         SELECT te_done.block_id,

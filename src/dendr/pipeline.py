@@ -322,11 +322,11 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             continue
 
     if processed > 0:
-        existing_concepts = [r["slug"] for r in db.get_all_concepts(conn)]
+        concept_count = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
         update_index(config, conn)
         append_activity_log(
             config,
-            f"INGEST processed {processed} blocks, {len(existing_concepts)} concepts",
+            f"INGEST processed {processed} blocks, {concept_count} concepts",
         )
 
     return processed

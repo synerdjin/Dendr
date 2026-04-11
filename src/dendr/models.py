@@ -21,7 +21,6 @@ class BlockType(str, enum.Enum):
 class PageType(str, enum.Enum):
     CONCEPT = "concept"
     ENTITY = "entity"
-    SUMMARY = "summary"
 
 
 @dataclass
