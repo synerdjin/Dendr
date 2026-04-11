@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 # Lazy-loaded model instances
 _models: dict[str, Any] = {}
 
+# Tagger occasionally emits the literal string "null" (or "none"/"n/a"/"") for
+# optional scalar fields instead of real JSON null. Normalize at the boundary
+# so the rest of the system never sees these.
+_NULLISH_STRINGS = {"null", "none", "n/a", "na", ""}
+
+
+def _normalize_annotation_raw(raw: dict) -> dict:
+    """Coerce nullish strings on optional scalar fields to real None."""
+    for key in ("urgency", "importance", "completion_status"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip().lower() in _NULLISH_STRINGS:
+            raw[key] = None
+    return raw
+
 
 def _model_role_from_path(model_path: Path) -> str:
     """Derive a short role label from a model filename for metrics."""
@@ -112,7 +126,7 @@ def _log_ft_pair(
 class LLMClient:
     """Unified interface to local LLM models."""
 
-    ANNOTATION_PROMPT_VERSION = "v1"
+    ANNOTATION_PROMPT_VERSION = "v2"
 
     def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
@@ -188,9 +202,9 @@ Return ONLY valid JSON:
   "emotional_valence": -1.0 to 1.0,
   "emotional_labels": ["frustrated", "excited", "anxious", "relieved", "burned_out", "curious", "conflicted", "satisfied", "overwhelmed"],
   "intensity": 0.0 to 1.0,
-  "urgency": "today|this_week|someday|null",
-  "importance": "high|medium|low|null",
-  "completion_status": "open|done|blocked|abandoned|null",
+  "urgency": "today" | "this_week" | "someday" | null,
+  "importance": "high" | "medium" | "low" | null,
+  "completion_status": "open" | "done" | "blocked" | "abandoned" | null,
   "epistemic_status": "certain|likely|exploring|questioning|venting",
   "causal_links": ["cause -> effect"],
   "concepts": ["concept-slug"],
@@ -204,8 +218,8 @@ Rules:
 - emotional_valence: -1.0 = very negative, 0.0 = neutral, 1.0 = very positive.
 - emotional_labels: only include labels that clearly apply. Empty array if neutral.
 - intensity: 0.0 = passing mention, 1.0 = this is a central concern right now.
-- urgency/importance: null if not applicable (e.g. a reflection has no urgency).
-- completion_status: only for tasks/plans. null for reflections/observations.
+- urgency/importance: use JSON `null` (unquoted) if not applicable — e.g. a reflection has no urgency. NEVER output the string "null".
+- completion_status: only for tasks/plans. Use JSON `null` (unquoted) for reflections/observations.
 - causal_links: extract "X -> Y" relationships if the text states or implies causality.
 - concepts: lowercase slugs with hyphens (e.g. "machine-learning").
 - entities: proper names of people, projects, tools, organizations.
@@ -243,7 +257,7 @@ Rules:
         )
 
         try:
-            return json.loads(raw)
+            return _normalize_annotation_raw(json.loads(raw))
         except json.JSONDecodeError:
             INFERENCE_JSON_FAILURES.labels(task="annotate").inc()
             logger.warning("Failed to parse annotation JSON, returning defaults")

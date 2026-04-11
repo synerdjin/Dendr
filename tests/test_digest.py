@@ -62,26 +62,52 @@ def test_render_local_digest_with_annotations():
             "annotations": 15,
             "open_tasks": 1,
         },
-        "narrative_blocks": [
-            {
-                "block_id": "b1",
-                "source_date": two_days_ago,
-                "original_text": "I'm feeling burned out",
-                "gist": "Feeling burned out from project work",
-                "block_type": "reflection",
-                "life_areas": ["work", "health"],
-                "emotional_valence": -0.6,
-                "emotional_labels": ["burned_out"],
-                "intensity": 0.9,
-                "urgency": None,
-                "importance": None,
-                "completion_status": None,
-                "epistemic_status": "certain",
-                "causal_links": ["3 months pushing -> burnout"],
-                "concepts": ["burnout"],
-                "entities": [],
-            },
-        ],
+        "this_period": {
+            "narrative_blocks": [
+                {
+                    "block_id": "b1",
+                    "source_date": two_days_ago,
+                    "original_text": "I'm feeling burned out",
+                    "gist": "Feeling burned out from project work",
+                    "block_type": "reflection",
+                    "life_areas": ["work", "health"],
+                    "emotional_valence": -0.6,
+                    "emotional_labels": ["burned_out"],
+                    "intensity": 0.9,
+                    "urgency": None,
+                    "importance": None,
+                    "completion_status": None,
+                    "epistemic_status": "certain",
+                    "causal_links": ["3 months pushing -> burnout"],
+                    "concepts": ["burnout"],
+                    "entities": [],
+                },
+            ],
+            "new_open_tasks": [
+                {
+                    "block_id": "t1",
+                    "source_date": two_days_ago,
+                    "original_text": "Fix CI pipeline",
+                    "gist": "Fix CI pipeline",
+                    "block_type": "task",
+                    "life_areas": ["work"],
+                    "emotional_valence": -0.2,
+                    "emotional_labels": [],
+                    "intensity": 0.7,
+                    "urgency": "this_week",
+                    "importance": "high",
+                    "completion_status": "open",
+                    "epistemic_status": "certain",
+                    "causal_links": [],
+                    "concepts": ["ci"],
+                    "entities": [],
+                },
+            ],
+        },
+        "carried_forward": {
+            "open_tasks": [],
+            "stale_tasks": [],
+        },
         "patterns": {
             "recurring_topics": [
                 {
@@ -102,28 +128,8 @@ def test_render_local_digest_with_annotations():
                 {"week_start": "2026-03-25", "avg_valence": -0.2, "block_count": 5},
                 {"week_start": "2026-04-01", "avg_valence": -0.5, "block_count": 7},
             ],
-            "open_tasks": [
-                {
-                    "block_id": "t1",
-                    "source_date": two_days_ago,
-                    "original_text": "Fix CI pipeline",
-                    "gist": "Fix CI pipeline",
-                    "block_type": "task",
-                    "life_areas": ["work"],
-                    "emotional_valence": -0.2,
-                    "emotional_labels": [],
-                    "intensity": 0.7,
-                    "urgency": "this_week",
-                    "importance": "high",
-                    "completion_status": "open",
-                    "epistemic_status": "certain",
-                    "causal_links": [],
-                    "concepts": ["ci"],
-                    "entities": [],
-                },
-            ],
             "completed_recently": [],
-            "stale_tasks": [],
+            "task_lifecycle": {},
         },
         "section_effectiveness": {},
     }
@@ -151,14 +157,14 @@ def test_render_local_digest_empty():
             "annotations": 0,
             "open_tasks": 0,
         },
-        "narrative_blocks": [],
+        "this_period": {"narrative_blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": [], "stale_tasks": []},
         "patterns": {
             "recurring_topics": [],
             "life_area_distribution": {},
             "emotional_trajectory": [],
-            "open_tasks": [],
             "completed_recently": [],
-            "stale_tasks": [],
+            "task_lifecycle": {},
         },
         "section_effectiveness": {},
     }
@@ -178,40 +184,45 @@ def test_build_synthesis_prompt():
             "annotations": 3,
             "open_tasks": 0,
         },
-        "narrative_blocks": [
-            {
-                "block_id": "b1",
-                "source_date": "2026-04-08",
-                "original_text": "Test note",
-                "gist": "Test gist",
-                "block_type": "observation",
-                "life_areas": ["work"],
-                "emotional_valence": 0.0,
-                "emotional_labels": [],
-                "intensity": 0.5,
-                "urgency": None,
-                "importance": None,
-                "completion_status": None,
-                "epistemic_status": "certain",
-                "causal_links": [],
-                "concepts": ["test"],
-                "entities": [],
-            },
-        ],
+        "user_context": "",
+        "this_period": {
+            "narrative_blocks": [
+                {
+                    "block_id": "b1",
+                    "source_date": "2026-04-08",
+                    "original_text": "Test note",
+                    "gist": "Test gist",
+                    "block_type": "observation",
+                    "life_areas": ["work"],
+                    "emotional_valence": 0.0,
+                    "emotional_labels": [],
+                    "intensity": 0.5,
+                    "urgency": None,
+                    "importance": None,
+                    "completion_status": None,
+                    "epistemic_status": "certain",
+                    "causal_links": [],
+                    "concepts": ["test"],
+                    "entities": [],
+                },
+            ],
+            "new_open_tasks": [],
+        },
+        "carried_forward": {"open_tasks": [], "stale_tasks": []},
         "patterns": {
             "recurring_topics": [],
             "life_area_distribution": {},
             "emotional_trajectory": [],
-            "open_tasks": [],
             "completed_recently": [],
-            "stale_tasks": [],
+            "task_lifecycle": {},
         },
         "section_effectiveness": {"narrative": 0.8},
     }
 
     prompt = build_synthesis_prompt(data)
-    assert "weekly advisor" in prompt
-    assert "narrative_blocks" in prompt
+    assert "reviewing a week" in prompt
+    assert "this_period.narrative_blocks" in prompt
+    assert "carried_forward.open_tasks" in prompt
     assert "Reframes" in prompt
     assert "section_effectiveness" in prompt
     assert "Test note" in prompt
@@ -309,12 +320,9 @@ def test_render_task_review_empty_with_fresh_only():
             "annotations": 1,
             "open_tasks": 1,
         },
-        "narrative_blocks": [],
-        "patterns": {
-            "recurring_topics": [],
-            "life_area_distribution": {},
-            "emotional_trajectory": [],
-            "open_tasks": [
+        "this_period": {
+            "narrative_blocks": [],
+            "new_open_tasks": [
                 {
                     "block_id": "fresh-1",
                     "source_date": today,
@@ -325,8 +333,14 @@ def test_render_task_review_empty_with_fresh_only():
                     "completion_status": "open",
                 }
             ],
+        },
+        "carried_forward": {"open_tasks": [], "stale_tasks": []},
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
             "completed_recently": [],
-            "stale_tasks": [],
+            "task_lifecycle": {},
         },
         "section_effectiveness": {},
     }
@@ -391,11 +405,8 @@ def test_render_local_digest_includes_task_review_section():
             "annotations": 1,
             "open_tasks": 1,
         },
-        "narrative_blocks": [],
-        "patterns": {
-            "recurring_topics": [],
-            "life_area_distribution": {},
-            "emotional_trajectory": [],
+        "this_period": {"narrative_blocks": [], "new_open_tasks": []},
+        "carried_forward": {
             "open_tasks": [
                 {
                     "block_id": "dendr-stale-1",
@@ -407,8 +418,14 @@ def test_render_local_digest_includes_task_review_section():
                     "completion_status": "open",
                 }
             ],
-            "completed_recently": [],
             "stale_tasks": [],
+        },
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
+            "completed_recently": [],
+            "task_lifecycle": {},
         },
         "section_effectiveness": {},
     }
@@ -461,6 +478,162 @@ def test_annotation_to_dict_age_days():
     assert d["age_days"] == 8
     assert d["urgency"] == "today"
     assert d["source_date"] == eight_days_ago
+
+
+def test_normalize_annotation_raw_coerces_nullish_strings():
+    from dendr.llm import _normalize_annotation_raw
+
+    raw = {
+        "gist": "x",
+        "urgency": "null",
+        "importance": "N/A",
+        "completion_status": "",
+    }
+    out = _normalize_annotation_raw(raw)
+    assert out["urgency"] is None
+    assert out["importance"] is None
+    assert out["completion_status"] is None
+
+
+def test_normalize_annotation_raw_preserves_real_values():
+    from dendr.llm import _normalize_annotation_raw
+
+    raw = {
+        "urgency": "today",
+        "importance": "high",
+        "completion_status": "open",
+    }
+    out = _normalize_annotation_raw(raw)
+    assert out["urgency"] == "today"
+    assert out["importance"] == "high"
+    assert out["completion_status"] == "open"
+
+
+def test_load_user_context_missing(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _load_user_context
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    assert _load_user_context(config) == ""
+
+
+def test_load_user_context_present(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _load_user_context
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    ctx = "I'm a senior engineer.\nActive goal: ship Dendr.\n"
+    (config.wiki_dir / "_user_context.md").write_text(ctx, encoding="utf-8")
+    assert _load_user_context(config) == ctx.strip()
+
+
+def test_build_synthesis_prompt_injects_user_context():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"concepts": 0, "annotations": 0, "open_tasks": 0},
+        "user_context": "Senior engineer working on Dendr. No kids, live alone.",
+        "this_period": {"narrative_blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": [], "stale_tasks": []},
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
+            "completed_recently": [],
+            "task_lifecycle": {},
+        },
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "Who the user is" in prompt
+    assert "Senior engineer working on Dendr" in prompt
+
+
+def test_build_synthesis_prompt_missing_user_context():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"concepts": 0, "annotations": 0, "open_tasks": 0},
+        "this_period": {"narrative_blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": [], "stale_tasks": []},
+        "patterns": {
+            "recurring_topics": [],
+            "life_area_distribution": {},
+            "emotional_trajectory": [],
+            "completed_recently": [],
+            "task_lifecycle": {},
+        },
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "_user_context.md" in prompt
+
+
+def test_gather_digest_data_splits_new_vs_carried_forward(tmp_path):
+    """_gather_digest_data sorts open tasks into this_period vs carried_forward."""
+    from dendr.config import Config
+    from dendr.db import upsert_block_annotation
+    from dendr.digest import _gather_digest_data
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    conn = _temp_db()
+
+    # Task written 2 days ago → this_period.new_open_tasks
+    two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    upsert_block_annotation(
+        conn,
+        BlockAnnotation(
+            block_id="new-task",
+            source_file="Daily/x.md",
+            source_date=two_days_ago,
+            original_text="new task",
+            gist="new task",
+            block_type=BlockType.TASK,
+            life_areas=["work"],
+            emotional_valence=0.0,
+            emotional_labels=[],
+            intensity=0.5,
+            completion_status="open",
+            concepts=[],
+            entities=[],
+        ),
+    )
+
+    # Task written 3 weeks ago → carried_forward.open_tasks
+    three_weeks_ago = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    upsert_block_annotation(
+        conn,
+        BlockAnnotation(
+            block_id="old-task",
+            source_file="Daily/x.md",
+            source_date=three_weeks_ago,
+            original_text="old task",
+            gist="old task",
+            block_type=BlockType.TASK,
+            life_areas=[],
+            emotional_valence=0.0,
+            emotional_labels=[],
+            intensity=0.5,
+            completion_status="open",
+            concepts=[],
+            entities=[],
+        ),
+    )
+
+    data = _gather_digest_data(config, conn, weeks=1)
+
+    new_ids = [t["block_id"] for t in data["this_period"]["new_open_tasks"]]
+    carried_ids = [t["block_id"] for t in data["carried_forward"]["open_tasks"]]
+    assert "new-task" in new_ids
+    assert "old-task" not in new_ids
+    assert "old-task" in carried_ids
+    assert "new-task" not in carried_ids
 
 
 def test_ingest_feedback_logs_ratings():
