@@ -20,7 +20,7 @@ def _write_manifest(path: Path, models: dict | None = None) -> Path:
         "version": 1,
         "models": models
         or {
-            "enrichment": {
+            "tagger": {
                 "repo": "test/repo",
                 "filename": "test-model.gguf",
                 "sha256": "",
@@ -42,8 +42,8 @@ def test_load_manifest():
     with tempfile.TemporaryDirectory() as td:
         mp = _write_manifest(Path(td))
         manifest = ModelManifest.load(mp)
-        assert "enrichment" in manifest.specs
-        assert manifest.specs["enrichment"].filename == "test-model.gguf"
+        assert "tagger" in manifest.specs
+        assert manifest.specs["tagger"].filename == "test-model.gguf"
 
 
 def test_check_missing_model():
@@ -54,7 +54,7 @@ def test_check_missing_model():
         models_dir.mkdir()
 
         statuses = check_all_models(models_dir, manifest)
-        assert not statuses["enrichment"].present
+        assert not statuses["tagger"].present
 
 
 def test_check_present_model():
@@ -68,8 +68,8 @@ def test_check_present_model():
         (models_dir / "test-model.gguf").write_bytes(b"fake model data")
 
         statuses = check_all_models(models_dir, manifest)
-        assert statuses["enrichment"].present
-        assert statuses["enrichment"].hash_match is None  # no expected hash
+        assert statuses["tagger"].present
+        assert statuses["tagger"].hash_match is None  # no expected hash
 
 
 def test_sha256_file():
@@ -113,12 +113,12 @@ def test_lock_models():
         (models_dir / "test-model.gguf").write_bytes(b"model content")
 
         hashes = lock_models(models_dir, manifest, mp)
-        assert "enrichment" in hashes
-        assert len(hashes["enrichment"]) == 64
+        assert "tagger" in hashes
+        assert len(hashes["tagger"]) == 64
 
         # Reload and check hash was persisted
         manifest2 = ModelManifest.load(mp)
-        assert manifest2.specs["enrichment"].sha256 == hashes["enrichment"]
+        assert manifest2.specs["tagger"].sha256 == hashes["tagger"]
 
 
 def test_preflight_hash_mismatch():
@@ -126,7 +126,7 @@ def test_preflight_hash_mismatch():
         mp = _write_manifest(
             Path(td),
             models={
-                "enrichment": {
+                "tagger": {
                     "repo": "test/repo",
                     "filename": "test-model.gguf",
                     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",

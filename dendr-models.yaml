@@ -3,16 +3,6 @@
 version: 1
 
 models:
-  enrichment:
-    repo: "bartowski/phi-4-GGUF"
-    filename: "phi-4-Q4_K_M.gguf"
-    sha256: ""
-    size_bytes: 9200000000
-    role: "Claim extraction, wiki section generation"
-    context: 8192
-    gpu_layers: -1
-    gated: false
-
   tagger:
     repo: "bartowski/google_gemma-3-4b-it-GGUF"
     filename: "google_gemma-3-4b-it-Q4_K_M.gguf"

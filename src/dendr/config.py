@@ -182,11 +182,7 @@ class Config:
         if not config_path.exists():
             return cls(data_dir=dd)
         data = json.loads(config_path.read_text())
-        model_data = {
-            k: v
-            for k, v in data.get("models", {}).items()
-            if k not in ("enrichment_model", "enrichment_ctx")
-        }
+        model_data = data.get("models", {})
         models = ModelConfig(**model_data)
         return cls(
             vault_path=Path(data["vault_path"]),

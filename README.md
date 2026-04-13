@@ -95,7 +95,6 @@ dendr models lock
 
 | Role | Model | Size | Gated? |
 |------|-------|------|--------|
-| Enrichment | [Phi-4 14B Q4_K_M](https://huggingface.co/microsoft/phi-4-gguf) | ~9 GB | No |
 | Fast tagger | [Gemma 3 4B Instruct Q4_K_M](https://huggingface.co/google/gemma-3-4b-it-gguf) | ~3 GB | No |
 | Vision/OCR | [Llama 3.2 Vision 11B Q4_K_M](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct-GGUF) | ~7 GB | Yes |
 | Embeddings | [nomic-embed-text-v1.5 Q8_0](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | No |

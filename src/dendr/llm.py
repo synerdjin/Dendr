@@ -47,8 +47,6 @@ def _normalize_annotation_raw(raw: dict) -> dict:
 def _model_role_from_path(model_path: Path) -> str:
     """Derive a short role label from a model filename for metrics."""
     name = model_path.stem.lower()
-    if "phi" in name:
-        return "enrichment"
     if "gemma" in name:
         return "tagger"
     if "llama" in name and "vision" in name:

@@ -158,7 +158,7 @@ def append_entity_observation(
     Entity pages accumulate raw block gists rather than LLM-synthesized
     sections — they exist for entity-centric retrieval ("what have I
     written about Tim Urban") and don't need rewording. This is also
-    much faster than calling the enrichment model for every mention.
+    much faster than calling the LLM for every mention.
     """
     if not observation.strip():
         return
