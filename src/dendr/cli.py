@@ -557,3 +557,14 @@ def _write_claude_prompts(claude_dir: Path, config) -> None:
         ),
         encoding="utf-8",
     )
+    (claude_dir / "schema-review.md").write_text(
+        read("claude_schema_review.md").format(
+            vault_path=config.vault_path,
+        ),
+        encoding="utf-8",
+    )
+
+    # Clean up stale prompt files from older versions
+    stale = claude_dir / "weekly.md"
+    if stale.exists():
+        stale.unlink()
