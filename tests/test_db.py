@@ -1,11 +1,9 @@
 """Tests for the database layer."""
 
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 from dendr.db import (
-    append_log,
     connect,
     get_block_annotation,
     get_block_state,
@@ -20,14 +18,11 @@ from dendr.db import (
     insert_task_event,
     upsert_block_annotation,
     upsert_block_state,
-    upsert_concept,
     upsert_feedback_score,
 )
 from dendr.models import (
     BlockAnnotation,
     BlockType,
-    Concept,
-    PageType,
 )
 
 
@@ -60,7 +55,6 @@ def _make_annotation(**kwargs) -> BlockAnnotation:
 def test_stats_empty():
     conn = _temp_db()
     s = get_stats(conn)
-    assert s["concepts"] == 0
     assert s["annotations"] == 0
     assert s["open_tasks"] == 0
 
@@ -75,29 +69,6 @@ def test_block_state():
     upsert_block_state(conn, "b1", "daily.md", "hash2", "model1", "v1")
     state = get_block_state(conn, "b1")
     assert state["block_hash"] == "hash2"
-
-
-def test_concept_upsert():
-    conn = _temp_db()
-    c = Concept(
-        slug="ml",
-        title="Machine Learning",
-        page_type=PageType.CONCEPT,
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        page_path="Wiki/concepts/ml.md",
-    )
-    upsert_concept(conn, c)
-    row = conn.execute("SELECT * FROM concepts WHERE slug = 'ml'").fetchone()
-    assert row["title"] == "Machine Learning"
-
-
-def test_log():
-    conn = _temp_db()
-    append_log(conn, "test_event", {"key": "value"})
-    rows = conn.execute("SELECT * FROM log").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["kind"] == "test_event"
 
 
 # ── Block annotation tests ───────────────────────────────────────────

@@ -1,11 +1,10 @@
-"""Core ingestion pipeline — orchestrates the full block-to-wiki flow.
+"""Core ingestion pipeline — orchestrates block annotation and storage.
 
 Annotation-first architecture:
   1. Reconcile closures from digest.md
   2. Parse daily notes, find dirty blocks
-  3. Annotate blocks (tagger model)
-  4. Canonicalize concepts/entities + embed annotation text
-  5. Commit annotations, annotation embeddings, wiki pages
+  3. Annotate blocks (tagger model) + embed annotation text
+  4. Commit annotations, annotation embeddings, task events
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from datetime import datetime
 from pathlib import Path
 
 from dendr import db, queue
-from dendr.canonicalize import canonicalize_concepts
 from dendr.config import Config
 from dendr.llm import LLMClient
 from dendr.metrics import BLOCKS_PROCESSED, INGEST_CYCLE_SECONDS
@@ -26,17 +24,10 @@ from dendr.models import (
     Block,
     BlockAnnotation,
     BlockType,
-    PageType,
     QueueItem,
 )
 from dendr.parser import inject_block_ids, parse_closures, parse_daily_note
 from dendr.privacy import filter_blocks
-from dendr.wiki import (
-    append_activity_log,
-    append_entity_observation,
-    ensure_page,
-    update_index,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +104,6 @@ def _build_annotation(
         completion_status=raw.get("completion_status"),
         causal_links=raw.get("causal_links", []),
         concepts=raw.get("concepts", []),
-        entities=raw.get("entities", []),
         private=item.private,
         model_version=model_version,
         prompt_version=LLMClient.ANNOTATION_PROMPT_VERSION,
@@ -173,11 +163,10 @@ def _track_task_lifecycle(
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
-    """Process pending queue items through annotation + canonicalization.
+    """Process pending queue items through annotation + embedding.
 
-    Phase 1 (tagger model):    annotate all blocks
-    Phase 2 (embedding model): canonicalize concepts/entities + embed annotation text
-    Phase 3 (DB commit):       persist annotations, embeddings, wiki pages
+    Phase 1 (tagger + embedding model): annotate all blocks + embed annotation text
+    Phase 2 (DB commit):                persist annotations, embeddings, task events
     """
     queue.recover_stale(config)
     pending = queue.get_pending(config)
@@ -191,72 +180,38 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not claimed:
         return 0
 
-    # ── Phase 1: Annotation (tagger model) ────────────────────────────
+    # ── Phase 1: Annotation + embedding ──────────────────────────────
     total = len(claimed)
-    logger.info("Phase 1/3: annotating %d blocks", total)
-    annotated: dict[str, tuple[QueueItem, BlockAnnotation]] = {}
+    logger.info("Phase 1/2: annotating & embedding %d blocks", total)
+    phase1: dict[str, tuple[QueueItem, BlockAnnotation, bytes | None]] = {}
 
     for idx, item in enumerate(claimed, 1):
         try:
             logger.info(
-                "Phase 1/3: annotating block %d/%d: %s", idx, total, item.block_id
+                "Phase 1/2: annotating block %d/%d: %s", idx, total, item.block_id
             )
             raw_ann = llm.annotate_block(item.block_text)
             annotation = _build_annotation(
                 item, raw_ann, llm.config.models.tagger_model
             )
-            annotated[item.block_id] = (item, annotation)
-        except Exception as e:
-            logger.error("Failed to annotate block %s: %s", item.block_id, e)
 
-    # ── Phase 2: Canonicalize + embed annotation text (embedding model) ──
-    total2 = len(annotated)
-    logger.info("Phase 2/3: canonicalizing & embedding %d blocks", total2)
-
-    phase2: dict[
-        str,
-        tuple[QueueItem, BlockAnnotation, dict[str, str], dict[str, str], bytes | None],
-    ] = {}
-
-    for idx2, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
-        try:
-            logger.info(
-                "Phase 2/3: canonicalizing block %d/%d: %s", idx2, total2, block_id
-            )
-            slug_map = canonicalize_concepts(
-                annotation.concepts, llm, conn, config, page_type="concept"
-            )
-            entity_slug_map = canonicalize_concepts(
-                annotation.entities, llm, conn, config, page_type="entity"
-            )
             embed_text = annotation.gist or item.block_text
             try:
                 ann_embedding = llm.embed(embed_text)
             except Exception as e:
-                logger.warning("Failed to embed annotation %s: %s", block_id, e)
+                logger.warning("Failed to embed annotation %s: %s", item.block_id, e)
                 ann_embedding = None
-            phase2[block_id] = (
-                item,
-                annotation,
-                slug_map,
-                entity_slug_map,
-                ann_embedding,
-            )
-        except Exception as e:
-            logger.error("Failed in phase 2 for block %s: %s", block_id, e)
 
-    # ── Phase 3: Commit annotations + wiki ────────────────────────────
-    total3 = len(phase2)
-    logger.info("Phase 3/3: committing %d blocks", total3)
+            phase1[item.block_id] = (item, annotation, ann_embedding)
+        except Exception as e:
+            logger.error("Failed to annotate block %s: %s", item.block_id, e)
+
+    # ── Phase 2: Commit annotations ──────────────────────────────────
+    total2 = len(phase1)
+    logger.info("Phase 2/2: committing %d blocks", total2)
     processed = 0
 
-    for block_id, (
-        item,
-        annotation,
-        slug_map,
-        entity_slug_map,
-        ann_embedding,
-    ) in phase2.items():
+    for block_id, (item, annotation, ann_embedding) in phase1.items():
         try:
             conn.execute("BEGIN")
             try:
@@ -274,27 +229,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
                             "Failed to store annotation embedding %s: %s",
                             block_id,
                             e,
-                        )
-
-                source_ref = Path(item.source_file).stem
-
-                # Ensure concept pages exist (no LLM rewriting).
-                for candidate, slug in slug_map.items():
-                    title = candidate.replace("-", " ").title()
-                    ensure_page(config, conn, slug, title, PageType.CONCEPT)
-
-                # Ensure entity pages exist and append gist observations.
-                for ent_candidate, ent_slug in entity_slug_map.items():
-                    ent_title = ent_candidate.strip()
-                    ensure_page(config, conn, ent_slug, ent_title, PageType.ENTITY)
-                    if annotation.gist:
-                        append_entity_observation(
-                            config,
-                            conn,
-                            ent_slug,
-                            ent_title,
-                            annotation.gist,
-                            source_ref,
                         )
 
                 db.upsert_block_state(
@@ -320,11 +254,8 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             continue
 
     if processed > 0:
-        concept_count = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
-        update_index(config, conn)
-        append_activity_log(
-            config,
-            f"INGEST processed {processed} blocks, {concept_count} concepts",
+        config.append_activity_log(
+            f"INGEST processed {processed} blocks",
         )
 
     return processed
@@ -390,7 +321,6 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
 
     if applied > 0:
         logger.info("Applied %d closure(s) from digest", applied)
-        db.append_log(conn, "closures_applied", {"count": applied})
 
     return applied
 

@@ -46,13 +46,6 @@ class SearchResponse(BaseModel):
     total: int
 
 
-class ConceptResult(BaseModel):
-    slug: str
-    title: str
-    page_type: str
-    page_path: str
-
-
 def _row_to_result(row: sqlite3.Row, score_type: str) -> AnnotationResult:
     return AnnotationResult(
         block_id=row["block_id"],
@@ -115,21 +108,6 @@ def search(
 
     SEARCH_REQUEST_SECONDS.labels(mode=mode).observe(time.monotonic() - t0)
     return SearchResponse(query=q, results=results[:limit], total=len(results))
-
-
-@app.get("/concepts", response_model=list[ConceptResult])
-def list_concepts() -> list[ConceptResult]:
-    assert _conn is not None
-    rows = db.get_all_concepts(_conn)
-    return [
-        ConceptResult(
-            slug=r["slug"],
-            title=r["title"],
-            page_type=r["page_type"],
-            page_path=r["page_path"],
-        )
-        for r in rows
-    ]
 
 
 @app.get("/stats")

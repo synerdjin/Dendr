@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 
@@ -42,7 +43,6 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
 
     # Pipeline settings
-    canonicalization_threshold: float = 0.86
     search_port: int = 7777
 
     # Paths derived from vault_path
@@ -57,18 +57,6 @@ class Config:
     @property
     def wiki_dir(self) -> Path:
         return self.vault_path / "Wiki"
-
-    @property
-    def concepts_dir(self) -> Path:
-        return self.wiki_dir / "concepts"
-
-    @property
-    def entities_dir(self) -> Path:
-        return self.wiki_dir / "entities"
-
-    @property
-    def lint_dir(self) -> Path:
-        return self.wiki_dir / "_lint"
 
     # Paths derived from data_dir
     @property
@@ -124,15 +112,25 @@ class Config:
     def config_file_path(self) -> Path:
         return self.data_dir / "config.json"
 
+    def append_activity_log(self, entry: str) -> None:
+        """Append to Wiki/log.md."""
+        log_path = self.wiki_dir / "log.md"
+        if not log_path.exists():
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                "---\ntype: log\n---\n\n# Activity Log\n\n", encoding="utf-8"
+            )
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"- `{now}` {entry}\n")
+
     def ensure_dirs(self) -> None:
         """Create all necessary directories."""
         for d in [
             self.daily_dir,
             self.attachments_dir,
             self.wiki_dir,
-            self.concepts_dir,
-            self.entities_dir,
-            self.lint_dir,
             self.data_dir,
             self.queue_dir,
             self.pending_dir,
@@ -169,7 +167,6 @@ class Config:
                 "embedding_dim": self.models.embedding_dim,
                 "embedding_dim_short": self.models.embedding_dim_short,
             },
-            "canonicalization_threshold": self.canonicalization_threshold,
             "search_port": self.search_port,
         }
         self.config_file_path.write_text(json.dumps(data, indent=2))
@@ -189,6 +186,5 @@ class Config:
             data_dir=dd,
             vault_id=data.get("vault_id", str(uuid.uuid4())),
             models=models,
-            canonicalization_threshold=data.get("canonicalization_threshold", 0.86),
             search_port=data.get("search_port", 7777),
         )
