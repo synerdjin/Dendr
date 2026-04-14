@@ -51,14 +51,10 @@ class BlockAnnotation:
     block_type: BlockType
     life_areas: list[str] = field(default_factory=list)
     emotional_valence: float = 0.0  # -1.0 (distressed) to +1.0 (elated)
-    emotional_labels: list[str] = field(default_factory=list)
     intensity: float = 0.5  # 0.0 (passing mention) to 1.0 (central concern)
     urgency: str | None = None  # today, this_week, someday
     importance: str | None = None  # high, medium, low
     completion_status: str | None = None  # open, done, blocked, abandoned
-    epistemic_status: str = (
-        "certain"  # certain, likely, exploring, questioning, venting
-    )
     causal_links: list[str] = field(default_factory=list)
     concepts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)

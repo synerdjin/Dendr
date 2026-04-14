@@ -49,7 +49,6 @@ def _make_annotation(**kwargs) -> BlockAnnotation:
         block_type=BlockType.OBSERVATION,
         life_areas=["work"],
         emotional_valence=0.0,
-        emotional_labels=[],
         intensity=0.5,
         concepts=["test-concept"],
         entities=[],
@@ -133,7 +132,6 @@ def test_annotation_json_fields():
     conn = _temp_db()
     ann = _make_annotation(
         life_areas=["work", "health"],
-        emotional_labels=["frustrated", "anxious"],
         causal_links=["overwork -> burnout"],
         concepts=["burnout", "project-x"],
         entities=["Alice"],
@@ -144,7 +142,6 @@ def test_annotation_json_fields():
 
     retrieved = get_block_annotation(conn, "dendr-test-1")
     assert json.loads(retrieved["life_areas"]) == ["work", "health"]
-    assert json.loads(retrieved["emotional_labels"]) == ["frustrated", "anxious"]
     assert json.loads(retrieved["causal_links"]) == ["overwork -> burnout"]
     assert json.loads(retrieved["concepts"]) == ["burnout", "project-x"]
 
