@@ -18,11 +18,6 @@ class BlockType(str, enum.Enum):
     LOG_ENTRY = "log_entry"
 
 
-class PageType(str, enum.Enum):
-    CONCEPT = "concept"
-    ENTITY = "entity"
-
-
 @dataclass
 class Block:
     """A single block extracted from a daily note."""
@@ -61,19 +56,6 @@ class BlockAnnotation:
     private: bool = False
     model_version: str = ""
     prompt_version: str = ""
-
-
-@dataclass
-class Concept:
-    """A concept/entity in the store."""
-
-    slug: str
-    title: str
-    page_type: PageType
-    created_at: datetime
-    updated_at: datetime
-    page_path: str
-    embedding: bytes | None = None
 
 
 @dataclass

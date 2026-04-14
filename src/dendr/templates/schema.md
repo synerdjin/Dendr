@@ -1,23 +1,12 @@
 ---
 type: schema
-version: "1.0"
+version: "2.0"
 ---
 
-# Dendr Wiki Schema
+# Dendr Annotation Schema
 
-This document defines how the Dendr system maintains the knowledge wiki.
+This document defines how the Dendr system annotates and stores knowledge.
 Both the local LLM and Claude read this on every session.
-
-## Page Types
-
-### Concept Page (`concepts/<slug>.md`)
-- Tracks a single concept, idea, or topic
-- Frontmatter: type, slug, human_touched, last_llm_hash, created, updated
-- Structure: human-zone (user edits) + llm-zone (system-managed evidence)
-
-### Entity Page (`entities/<slug>.md`)
-- Tracks a named entity (person, project, tool, organization)
-- Same structure as concept pages
 
 ## Block Annotation Format
 
@@ -28,19 +17,12 @@ Every block from a daily note is annotated with:
 - `emotional_valence`, `intensity`: emotional signals
 - `urgency`, `importance`: only for tasks/plans, reflect state at source_date
 - `completion_status`: open, done, blocked, abandoned — updated via digest closure flow
-- `concepts`, `entities`: canonicalized slugs for cross-referencing
+- `concepts`, `entities`: tag slugs assigned by the tagger for topic aggregation
 
 ## Conventions
 
 - Slugs: lowercase, hyphens, no spaces (`machine-learning`, not `Machine Learning`)
-- Cross-references: use `[[slug]]` Obsidian wikilinks
-- LLM zone: everything between `<!-- llm-zone -->` markers is system-managed
-- Human zone: everything between `<!-- human-zone -->` markers is sacred
-
-## Lint Rules
-
-- Orphan pages: concept/entity pages referenced by zero annotations
-- Missing cross-refs: `[[slug]]` links pointing to non-existent pages
+- Cross-references: use `[[slug]]` Obsidian wikilinks in daily notes
 
 ## Privacy
 

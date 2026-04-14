@@ -5,7 +5,6 @@ Commands:
   dendr daemon               Run the watcher daemon
   dendr ingest               Run a single ingest cycle
   dendr search <query>       Search the knowledge base
-  dendr lint                 Run lint checks
   dendr serve                Start the search server
   dendr stats                Show knowledge base statistics
   dendr models pull          Download models from manifest
@@ -161,9 +160,8 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     """Reset block state and reprocess all daily notes from scratch.
 
     Clears the block_state table and the done queue so every block is
-    treated as new on the next ingest cycle. Existing annotations,
-    concepts, and wiki pages are preserved — annotations will be
-    overwritten as blocks get re-tagged.
+    treated as new on the next ingest cycle. Existing annotations are
+    preserved — they will be overwritten as blocks get re-tagged.
     """
     import shutil
 
@@ -283,24 +281,6 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
-def lint(data_dir: str | None) -> None:
-    """Run lint checks on the knowledge base."""
-    from dendr.config import Config
-    from dendr.db import connect, init_schema
-    from dendr.lint import run_lint
-
-    dd = Path(data_dir) if data_dir else None
-    config = Config.load(dd)
-    conn = connect(config.db_path)
-    init_schema(conn)
-
-    report = run_lint(config, conn)
-    conn.close()
-    click.echo(report)
-
-
-@main.command()
-@click.option("--data-dir", type=click.Path(), default=None)
 @click.option(
     "--vault",
     type=click.Path(exists=True, file_okay=False),
@@ -371,7 +351,6 @@ def stats(data_dir: str | None) -> None:
     conn.close()
 
     click.echo(f"Annotations:       {s['annotations']}")
-    click.echo(f"Concepts:          {s['concepts']}")
     click.echo(f"Open tasks:        {s['open_tasks']}")
     click.echo(f"Pending queue:     {pending}")
 

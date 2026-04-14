@@ -57,7 +57,6 @@ def test_render_local_digest_with_annotations():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": today,
         "stats": {
-            "concepts": 10,
             "annotations": 15,
             "open_tasks": 1,
         },
@@ -148,7 +147,6 @@ def test_render_local_digest_empty():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": datetime.now().strftime("%Y-%m-%d"),
         "stats": {
-            "concepts": 0,
             "annotations": 0,
             "open_tasks": 0,
         },
@@ -175,7 +173,6 @@ def test_build_synthesis_prompt():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": datetime.now().strftime("%Y-%m-%d"),
         "stats": {
-            "concepts": 2,
             "annotations": 3,
             "open_tasks": 0,
         },
@@ -309,7 +306,6 @@ def test_render_task_review_empty_with_fresh_only():
         "period_start": today,
         "period_end": today,
         "stats": {
-            "concepts": 0,
             "annotations": 1,
             "open_tasks": 1,
         },
@@ -394,7 +390,6 @@ def test_render_local_digest_includes_task_review_section():
         "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "period_end": today,
         "stats": {
-            "concepts": 0,
             "annotations": 1,
             "open_tasks": 1,
         },
@@ -526,7 +521,7 @@ def test_build_synthesis_prompt_injects_user_context():
         "generated_at": datetime.now().isoformat(),
         "period_start": "2026-04-03",
         "period_end": "2026-04-10",
-        "stats": {"concepts": 0, "annotations": 0, "open_tasks": 0},
+        "stats": {"annotations": 0, "open_tasks": 0},
         "user_context": "Senior engineer working on Dendr. No kids, live alone.",
         "this_period": {"narrative_blocks": [], "new_open_tasks": []},
         "carried_forward": {"open_tasks": [], "stale_tasks": []},
@@ -549,7 +544,7 @@ def test_build_synthesis_prompt_missing_user_context():
         "generated_at": datetime.now().isoformat(),
         "period_start": "2026-04-03",
         "period_end": "2026-04-10",
-        "stats": {"concepts": 0, "annotations": 0, "open_tasks": 0},
+        "stats": {"annotations": 0, "open_tasks": 0},
         "this_period": {"narrative_blocks": [], "new_open_tasks": []},
         "carried_forward": {"open_tasks": [], "stale_tasks": []},
         "patterns": {

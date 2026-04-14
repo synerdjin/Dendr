@@ -203,8 +203,7 @@ Return ONLY valid JSON:
   "importance": "high" | "medium" | "low" | null,
   "completion_status": "open" | "done" | "blocked" | "abandoned" | null,
   "causal_links": ["cause -> effect"],
-  "concepts": ["concept-slug"],
-  "entities": ["entity name"]
+  "concepts": ["concept-slug"]
 }}
 
 Rules:
@@ -217,7 +216,6 @@ Rules:
 - completion_status: only for tasks/plans. Use JSON `null` (unquoted) for reflections/observations.
 - causal_links: extract "X -> Y" relationships if the text states or implies causality.
 - concepts: lowercase slugs with hyphens (e.g. "machine-learning").
-- entities: proper names of people, projects, tools, organizations.
 """
 
         model = self._tagger_model()
@@ -267,7 +265,6 @@ Rules:
                 "completion_status": None,
                 "causal_links": [],
                 "concepts": [],
-                "entities": [],
             }
 
     def tag_block(self, block_text: str) -> dict:

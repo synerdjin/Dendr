@@ -21,7 +21,6 @@ from datetime import datetime, timedelta
 
 from dendr import db
 from dendr.config import Config
-from dendr.wiki import append_activity_log
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +366,7 @@ Note trends, don't over-interpret. Skip if sample sizes are tiny.
 ## Rules
 - Lead with the most important insight.
 - Be specific — quote or paraphrase the user's actual words.
-- Use `[[concept-slug]]` for cross-references.
+- Reference concept tags from the annotations when relevant.
 - Keep total output under 3000 words.
 - Do NOT include a preamble or sign-off.
 - Do NOT pad sections. If empty, skip entirely.
@@ -395,7 +394,6 @@ def render_local_digest(data: dict) -> str:
         "",
         f"**Period:** {period_start} → {now_str}  ",
         f"**Annotations:** {data['stats']['annotations']} | "
-        f"**Concepts:** {data['stats']['concepts']} | "
         f"**Open tasks:** {data['stats']['open_tasks']}",
         "",
     ]
@@ -576,8 +574,7 @@ def generate_digest(
     n_blocks = len(this_period.get("narrative_blocks", []))
     n_new = len(this_period.get("new_open_tasks", []))
     n_carried = len(carried_forward.get("open_tasks", []))
-    append_activity_log(
-        config,
+    config.append_activity_log(
         f"DIGEST generated ({n_blocks} blocks, {n_new} new tasks, "
         f"{n_carried} carried-forward, "
         f"{feedback_stats['logged_ratings']} feedback)",

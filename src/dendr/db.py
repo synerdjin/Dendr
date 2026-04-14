@@ -2,12 +2,9 @@
 
 Tables:
   - block_annotations: rich per-block metadata for digest/synthesis (primary artifact)
-  - concepts: canonical concept/entity slugs (used by wiki entity pages)
   - block_state: tracks which blocks have been processed
-  - page_hashes: wiki page LLM-zone hashes for drift detection
   - feedback_scores: per-section digest feedback for learning
   - task_events: lifecycle events for task/plan blocks
-  - log: append-only activity log
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import BlockAnnotation, Concept
+from dendr.models import BlockAnnotation
 
 # sqlite-vec is loaded as an extension at runtime
 _VEC_LOADED = False
@@ -88,22 +85,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_annotations_completion
             ON block_annotations(completion_status);
 
-        CREATE TABLE IF NOT EXISTS concepts (
-            slug        TEXT PRIMARY KEY,
-            title       TEXT NOT NULL,
-            page_type   TEXT NOT NULL DEFAULT 'concept',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            page_path   TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE TABLE IF NOT EXISTS log (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts      TEXT NOT NULL,
-            kind    TEXT NOT NULL,
-            payload TEXT NOT NULL DEFAULT '{}'
-        );
-
         CREATE TABLE IF NOT EXISTS block_state (
             block_id    TEXT PRIMARY KEY,
             source_file TEXT NOT NULL,
@@ -111,12 +92,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             model_version TEXT NOT NULL DEFAULT '',
             prompt_version TEXT NOT NULL DEFAULT '',
             processed_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS page_hashes (
-            page_path   TEXT PRIMARY KEY,
-            llm_hash    TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS feedback_scores (
@@ -165,15 +140,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
-    # sqlite-vec for concept canonicalization + annotation embeddings
-    try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS concepts_vec "
-            "USING vec0(embedding float[768], concept_slug text)"
-        )
-    except sqlite3.OperationalError:
-        pass
-
+    # sqlite-vec for annotation embeddings (semantic search)
     try:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS annotations_vec "
@@ -181,6 +148,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     except sqlite3.OperationalError:
         pass
+
+    # Migration: drop legacy tables from older schema versions.
+    for table in ("concepts_vec", "concepts", "page_hashes", "log"):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 # ── Block annotation operations ───────────────────────────────────────
@@ -261,93 +232,6 @@ def get_block_annotation(conn: sqlite3.Connection, block_id: str) -> sqlite3.Row
     ).fetchone()
 
 
-# ── Concept operations ────────────────────────────────────────────────
-
-
-def upsert_concept(conn: sqlite3.Connection, concept: Concept) -> None:
-    """Insert or update a concept."""
-    now = datetime.now().isoformat()
-    conn.execute(
-        """
-        INSERT INTO concepts (slug, title, page_type, created_at, updated_at, page_path)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(slug) DO UPDATE SET
-            title = excluded.title,
-            updated_at = excluded.updated_at,
-            page_path = excluded.page_path
-        """,
-        (
-            concept.slug,
-            concept.title,
-            concept.page_type.value,
-            concept.created_at.isoformat() if concept.created_at else now,
-            now,
-            concept.page_path,
-        ),
-    )
-
-
-def insert_concept_embedding(
-    conn: sqlite3.Connection, slug: str, embedding: np.ndarray
-) -> None:
-    """Insert or replace a concept's embedding."""
-    conn.execute("DELETE FROM concepts_vec WHERE concept_slug = ?", (slug,))
-    conn.execute(
-        "INSERT INTO concepts_vec(embedding, concept_slug) VALUES (?, ?)",
-        (embedding.astype(np.float32).tobytes(), slug),
-    )
-
-
-def find_nearest_concept(
-    conn: sqlite3.Connection,
-    embedding: np.ndarray,
-    top_k: int = 5,
-    page_type: str | None = None,
-) -> list[tuple[str, float]]:
-    """Find nearest concept slugs by embedding. Returns (slug, distance) pairs.
-
-    If page_type is provided, restricts results to slugs of that type
-    (concept vs entity). Over-fetches and post-filters since concepts_vec
-    only stores the slug as an aux column.
-    """
-    try:
-        # Over-fetch when filtering so we still return ~top_k after the filter
-        fetch_k = top_k * 5 if page_type else top_k
-        rows = conn.execute(
-            """
-            SELECT concept_slug, distance
-            FROM concepts_vec
-            WHERE embedding MATCH ?
-            ORDER BY distance
-            LIMIT ?
-            """,
-            (embedding.astype(np.float32).tobytes(), fetch_k),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return []
-
-    if not rows or page_type is None:
-        return [(r["concept_slug"], r["distance"]) for r in rows]
-
-    slugs = [r["concept_slug"] for r in rows]
-    placeholders = ",".join("?" * len(slugs))
-    type_rows = conn.execute(
-        f"SELECT slug FROM concepts WHERE slug IN ({placeholders}) AND page_type = ?",  # nosec B608  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
-        (*slugs, page_type),
-    ).fetchall()
-    matching = {r["slug"] for r in type_rows}
-    return [
-        (r["concept_slug"], r["distance"])
-        for r in rows
-        if r["concept_slug"] in matching
-    ][:top_k]
-
-
-def get_all_concepts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Get all concepts."""
-    return conn.execute("SELECT * FROM concepts ORDER BY slug").fetchall()
-
-
 # ── Block state operations ────────────────────────────────────────────
 
 
@@ -380,39 +264,6 @@ def upsert_block_state(
             processed_at = excluded.processed_at
         """,
         (block_id, source_file, block_hash, model_version, prompt_version, now),
-    )
-
-
-# ── Page hash operations ──────────────────────────────────────────────
-
-
-def get_page_hash(conn: sqlite3.Connection, page_path: str) -> str | None:
-    row = conn.execute(
-        "SELECT llm_hash FROM page_hashes WHERE page_path = ?", (page_path,)
-    ).fetchone()
-    return row["llm_hash"] if row else None
-
-
-def set_page_hash(conn: sqlite3.Connection, page_path: str, llm_hash: str) -> None:
-    now = datetime.now().isoformat()
-    conn.execute(
-        """
-        INSERT INTO page_hashes (page_path, llm_hash, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(page_path) DO UPDATE SET
-            llm_hash = excluded.llm_hash, updated_at = excluded.updated_at
-        """,
-        (page_path, llm_hash, now),
-    )
-
-
-# ── Log operations ────────────────────────────────────────────────────
-
-
-def append_log(conn: sqlite3.Connection, kind: str, payload: dict) -> None:
-    conn.execute(
-        "INSERT INTO log (ts, kind, payload) VALUES (?, ?, ?)",
-        (datetime.now().isoformat(), kind, json.dumps(payload)),
     )
 
 
@@ -624,7 +475,6 @@ def search_annotations_semantic(
 
 
 def get_stats(conn: sqlite3.Connection) -> dict:
-    concepts_count = conn.execute("SELECT COUNT(*) as n FROM concepts").fetchone()["n"]
     annotations_count = conn.execute(
         "SELECT COUNT(*) as n FROM block_annotations"
     ).fetchone()["n"]
@@ -636,7 +486,6 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         """
     ).fetchone()["n"]
     return {
-        "concepts": concepts_count,
         "annotations": annotations_count,
         "open_tasks": open_tasks,
     }

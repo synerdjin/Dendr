@@ -77,19 +77,6 @@ INGEST_CYCLE_SECONDS = Histogram(
 )
 
 # ---------------------------------------------------------------------------
-# Canonicalization
-# ---------------------------------------------------------------------------
-CANONICALIZATION_REUSE = Counter(
-    "dendr_canonicalization_reuse_total",
-    "Times an existing concept slug was reused",
-)
-
-CANONICALIZATION_NEW = Counter(
-    "dendr_canonicalization_new_total",
-    "Times a new concept slug was created",
-)
-
-# ---------------------------------------------------------------------------
 # Search server
 # ---------------------------------------------------------------------------
 SEARCH_REQUEST_SECONDS = Histogram(
@@ -105,11 +92,6 @@ SEARCH_REQUEST_SECONDS = Histogram(
 ANNOTATIONS_TOTAL = Gauge(
     "dendr_annotations_total",
     "Total block annotations in the knowledge base",
-)
-
-CONCEPTS_TOTAL = Gauge(
-    "dendr_concepts_total",
-    "Total concepts in the knowledge base",
 )
 
 
@@ -153,6 +135,5 @@ def collect_db_metrics(conn) -> None:
 
         stats = db.get_stats(conn)
         ANNOTATIONS_TOTAL.set(stats.get("annotations", 0))
-        CONCEPTS_TOTAL.set(stats.get("concepts", 0))
     except Exception as e:
         logger.debug("Failed to collect DB metrics: %s", e)
