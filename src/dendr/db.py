@@ -332,7 +332,7 @@ def find_nearest_concept(
     slugs = [r["concept_slug"] for r in rows]
     placeholders = ",".join("?" * len(slugs))
     type_rows = conn.execute(
-        f"SELECT slug FROM concepts WHERE slug IN ({placeholders}) AND page_type = ?",
+        f"SELECT slug FROM concepts WHERE slug IN ({placeholders}) AND page_type = ?",  # nosec B608  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         (*slugs, page_type),
     ).fetchall()
     matching = {r["slug"] for r in type_rows}
@@ -612,12 +612,12 @@ def search_annotations_semantic(
     ids = [r["block_id"] for r in vec_rows]
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
-    q = f"SELECT * FROM block_annotations WHERE block_id IN ({placeholders})"
+    q = f"SELECT * FROM block_annotations WHERE block_id IN ({placeholders})"  # nosec B608  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     if not include_private:
         q += " AND private = 0"
     q += " LIMIT ?"
     params.append(limit)
-    return conn.execute(q, params).fetchall()  # nosemgrep: sqlalchemy-execute-raw-query
+    return conn.execute(q, params).fetchall()
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
