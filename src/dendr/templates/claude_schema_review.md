@@ -14,7 +14,7 @@ Review the Dendr wiki schema and knowledge health for potential improvements.
 3. Check concept canonicalization quality: look for near-duplicate concept slugs that
    should have been merged (embedding similarity threshold is 0.86)
 4. Review block annotation field usage patterns — are any fields consistently empty or
-   under-used? (e.g., `causal_links`, `epistemic_status`)
+   under-used? (e.g., `causal_links`)
 5. Check task lifecycle health: ratio of open vs completed vs abandoned tasks, average
    age of open tasks, closure rate trends
 6. Identify any emerging categories that deserve their own page type or life area

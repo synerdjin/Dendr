@@ -124,7 +124,7 @@ def _log_ft_pair(
 class LLMClient:
     """Unified interface to local LLM models."""
 
-    ANNOTATION_PROMPT_VERSION = "v2"
+    ANNOTATION_PROMPT_VERSION = "v3"
 
     def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
@@ -198,12 +198,10 @@ Return ONLY valid JSON:
   "block_type": "reflection|task|decision|question|observation|vent|plan|log_entry",
   "life_areas": ["work", "health", "relationships", "finance", "learning", "creative", "meta"],
   "emotional_valence": -1.0 to 1.0,
-  "emotional_labels": ["frustrated", "excited", "anxious", "relieved", "burned_out", "curious", "conflicted", "satisfied", "overwhelmed"],
   "intensity": 0.0 to 1.0,
   "urgency": "today" | "this_week" | "someday" | null,
   "importance": "high" | "medium" | "low" | null,
   "completion_status": "open" | "done" | "blocked" | "abandoned" | null,
-  "epistemic_status": "certain|likely|exploring|questioning|venting",
   "causal_links": ["cause -> effect"],
   "concepts": ["concept-slug"],
   "entities": ["entity name"]
@@ -214,7 +212,6 @@ Rules:
 - block_type: classify the primary purpose of this block.
 - life_areas: which domains does this touch? Include ALL that apply. Leave empty if unclear.
 - emotional_valence: -1.0 = very negative, 0.0 = neutral, 1.0 = very positive.
-- emotional_labels: only include labels that clearly apply. Empty array if neutral.
 - intensity: 0.0 = passing mention, 1.0 = this is a central concern right now.
 - urgency/importance: use JSON `null` (unquoted) if not applicable — e.g. a reflection has no urgency. NEVER output the string "null".
 - completion_status: only for tasks/plans. Use JSON `null` (unquoted) for reflections/observations.
@@ -264,12 +261,10 @@ Rules:
                 "block_type": "observation",
                 "life_areas": [],
                 "emotional_valence": 0.0,
-                "emotional_labels": [],
                 "intensity": 0.5,
                 "urgency": None,
                 "importance": None,
                 "completion_status": None,
-                "epistemic_status": "certain",
                 "causal_links": [],
                 "concepts": [],
                 "entities": [],

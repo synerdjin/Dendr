@@ -25,7 +25,7 @@ Every block from a daily note is annotated with:
 - `gist`: one-line summary of what the block is about
 - `block_type`: reflection, task, decision, question, observation, vent, plan, log_entry
 - `life_areas`: which domains the block touches (work, health, etc.)
-- `emotional_valence`, `emotional_labels`, `intensity`: emotional signals
+- `emotional_valence`, `intensity`: emotional signals
 - `urgency`, `importance`: only for tasks/plans, reflect state at source_date
 - `completion_status`: open, done, blocked, abandoned — updated via digest closure flow
 - `concepts`, `entities`: canonicalized slugs for cross-referencing
