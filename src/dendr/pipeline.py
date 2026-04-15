@@ -163,10 +163,11 @@ def _track_task_lifecycle(
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
-    """Process pending queue items through annotation + embedding.
+    """Process pending queue items through annotation, embedding, and commit.
 
-    Phase 1 (tagger + embedding model): annotate all blocks + embed annotation text
-    Phase 2 (DB commit):                persist annotations, embeddings, task events
+    Phase 1 (tagger model):    annotate all blocks (model stays loaded)
+    Phase 2 (embedding model): embed all annotations (model stays loaded)
+    Phase 3 (DB commit):       persist annotations, embeddings, task events
     """
     queue.recover_stale(config)
     pending = queue.get_pending(config)
@@ -180,38 +181,44 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not claimed:
         return 0
 
-    # ── Phase 1: Annotation + embedding ──────────────────────────────
+    # ── Phase 1: Annotate all blocks (tagger model) ──────────────────
     total = len(claimed)
-    logger.info("Phase 1/2: annotating & embedding %d blocks", total)
-    phase1: dict[str, tuple[QueueItem, BlockAnnotation, bytes | None]] = {}
+    logger.info("Phase 1/3: annotating %d blocks", total)
+    annotated: dict[str, tuple[QueueItem, BlockAnnotation]] = {}
 
     for idx, item in enumerate(claimed, 1):
         try:
             logger.info(
-                "Phase 1/2: annotating block %d/%d: %s", idx, total, item.block_id
+                "Phase 1/3: annotating block %d/%d: %s", idx, total, item.block_id
             )
             raw_ann = llm.annotate_block(item.block_text)
             annotation = _build_annotation(
                 item, raw_ann, llm.config.models.tagger_model
             )
-
-            embed_text = annotation.gist or item.block_text
-            try:
-                ann_embedding = llm.embed(embed_text)
-            except Exception as e:
-                logger.warning("Failed to embed annotation %s: %s", item.block_id, e)
-                ann_embedding = None
-
-            phase1[item.block_id] = (item, annotation, ann_embedding)
+            annotated[item.block_id] = (item, annotation)
         except Exception as e:
             logger.error("Failed to annotate block %s: %s", item.block_id, e)
 
-    # ── Phase 2: Commit annotations ──────────────────────────────────
-    total2 = len(phase1)
-    logger.info("Phase 2/2: committing %d blocks", total2)
+    # ── Phase 2: Embed all annotations (embedding model) ─────────────
+    total2 = len(annotated)
+    logger.info("Phase 2/3: embedding %d blocks", total2)
+    embeddings: dict[str, bytes | None] = {}
+
+    for idx, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
+        try:
+            embed_text = annotation.gist or item.block_text
+            embeddings[block_id] = llm.embed(embed_text)
+        except Exception as e:
+            logger.warning("Failed to embed annotation %s: %s", block_id, e)
+            embeddings[block_id] = None
+
+    # ── Phase 3: Commit annotations + embeddings ─────────────────────
+    total3 = len(annotated)
+    logger.info("Phase 3/3: committing %d blocks", total3)
     processed = 0
 
-    for block_id, (item, annotation, ann_embedding) in phase1.items():
+    for block_id, (item, annotation) in annotated.items():
+        ann_embedding = embeddings.get(block_id)
         try:
             conn.execute("BEGIN")
             try:

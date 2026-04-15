@@ -70,28 +70,39 @@ def _unload_all_except(keep_key: str | None = None) -> None:
 
 
 def _get_model(
-    model_path: Path, n_ctx: int = 4096, n_gpu_layers: int = -1, embedding: bool = False
+    model_path: Path,
+    n_ctx: int = 4096,
+    n_gpu_layers: int = -1,
+    embedding: bool = False,
+    chat_handler: Any = None,
 ) -> Any:
     """Get or create a llama-cpp-python model instance.
 
     Only one model is kept in VRAM at a time to fit within GPU memory.
+    Pass chat_handler for vision models that need an mmproj projector.
     """
     from llama_cpp import Llama
 
-    key = str(model_path)
+    # Use a different cache key for vision vs text-only mode of the same model
+    key = str(model_path) + (":vision" if chat_handler else "")
     if key not in _models:
         # Unload other models to free VRAM before loading a new one
         _unload_all_except(None)
         role = _model_role_from_path(model_path)
+        if chat_handler:
+            role = "vision"
         logger.info("Loading model: %s (ctx=%d)", model_path.name, n_ctx)
         t0 = time.monotonic()
-        _models[key] = Llama(
-            model_path=str(model_path),
-            n_ctx=n_ctx,
-            n_gpu_layers=n_gpu_layers,
-            verbose=False,
-            embedding=embedding,
-        )
+        kwargs: dict[str, Any] = {
+            "model_path": str(model_path),
+            "n_ctx": n_ctx,
+            "n_gpu_layers": n_gpu_layers,
+            "verbose": False,
+            "embedding": embedding,
+        }
+        if chat_handler:
+            kwargs["chat_handler"] = chat_handler
+        _models[key] = Llama(**kwargs)
         MODEL_LOAD_SECONDS.labels(model_role=role).observe(time.monotonic() - t0)
         MODEL_LOADED.labels(model_role=role).set(1)
     return _models[key]
@@ -150,6 +161,7 @@ class LLMClient:
             missing = []
             for name in [
                 self.config.models.tagger_model,
+                self.config.models.tagger_mmproj,
                 self.config.models.embedding_model,
             ]:
                 if not (self.config.models_dir / name).exists():
@@ -353,9 +365,14 @@ Return ONLY valid JSON:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode()
 
+            from llama_cpp.llama_chat_format import Llava15ChatHandler
+
+            mmproj_path = self._model_path(self.config.models.tagger_mmproj)
+            handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
             model = _get_model(
                 self._model_path(self.config.models.vlm_model),
                 n_ctx=self.config.models.vlm_ctx,
+                chat_handler=handler,
             )
             t0 = time.monotonic()
             response = model.create_chat_completion(
