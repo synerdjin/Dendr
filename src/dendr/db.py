@@ -18,13 +18,13 @@ import numpy as np
 
 from dendr.models import BlockAnnotation
 
-# sqlite-vec is loaded as an extension at runtime
-_VEC_LOADED = False
+# sqlite-vec must be loaded per-connection (extensions are connection-scoped).
+_VEC_AVAILABLE: bool | None = None  # None = untested, True/False = cached result
 
 
 def _load_vec(conn: sqlite3.Connection) -> None:
-    global _VEC_LOADED
-    if _VEC_LOADED:
+    global _VEC_AVAILABLE
+    if _VEC_AVAILABLE is False:
         return
     try:
         import sqlite_vec
@@ -32,15 +32,19 @@ def _load_vec(conn: sqlite3.Connection) -> None:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
-        _VEC_LOADED = True
+        _VEC_AVAILABLE = True
     except Exception:
-        pass
+        _VEC_AVAILABLE = False
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
+def connect(
+    db_path: Path, *, check_same_thread: bool = True
+) -> sqlite3.Connection:
     """Open (or create) the Dendr state database."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn = sqlite3.connect(
+        str(db_path), isolation_level=None, check_same_thread=check_same_thread
+    )
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row

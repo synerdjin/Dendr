@@ -287,7 +287,12 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
     default=None,
     help="Override vault path",
 )
-def serve(data_dir: str | None, vault: str | None) -> None:
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Bind address (use 0.0.0.0 for Docker)",
+)
+def serve(data_dir: str | None, vault: str | None, host: str) -> None:
     """Start the search HTTP server."""
     from dendr.config import Config
     from dendr.search import run_server
@@ -296,8 +301,7 @@ def serve(data_dir: str | None, vault: str | None) -> None:
     config = Config.load(dd)
     if vault:
         config.vault_path = Path(vault).resolve()
-    click.echo(f"Starting search server on http://127.0.0.1:{config.search_port}")
-    run_server(config)
+    run_server(config, host=host)
 
 
 @main.command()

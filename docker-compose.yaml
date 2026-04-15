@@ -41,7 +41,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: ["serve", "--data-dir", "/data", "--vault", "/vault"]
+    command: ["serve", "--data-dir", "/data", "--vault", "/vault", "--host", "0.0.0.0"]
     restart: unless-stopped
 
   # --- Monitoring stack ---

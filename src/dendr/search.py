@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, Query, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -21,8 +23,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Dendr Search", version="0.1.0")
 
 _config: Config | None = None
-_conn: sqlite3.Connection | None = None
+_db_path: Path | None = None
 _llm: LLMClient | None = None
+_llm_lock = threading.Lock()
 
 
 class AnnotationResult(BaseModel):
@@ -63,6 +66,13 @@ def _row_to_result(row: sqlite3.Row, score_type: str) -> AnnotationResult:
     )
 
 
+def _get_conn() -> sqlite3.Connection:
+    """Create a per-request connection (thread-safe with WAL mode)."""
+    if _db_path is None:
+        raise RuntimeError("Search server not initialized")
+    return db.connect(_db_path)
+
+
 @app.get("/metrics")
 def metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -76,54 +86,68 @@ def search(
     include_private: bool = Query(False),
 ) -> SearchResponse:
     """Search block annotations via full-text, semantic, or hybrid."""
-    assert _conn is not None and _llm is not None
-    t0 = time.monotonic()
+    if _llm is None:
+        raise RuntimeError("Search server not initialized")
+    conn = _get_conn()
+    try:
+        t0 = time.monotonic()
 
-    results: list[AnnotationResult] = []
-    seen_ids: set[str] = set()
+        results: list[AnnotationResult] = []
+        seen_ids: set[str] = set()
 
-    if mode in ("fts", "hybrid"):
-        fts_rows = db.search_annotations_fts(
-            _conn, q, limit=limit, include_private=include_private
-        )
-        for row in fts_rows:
-            if row["block_id"] in seen_ids:
-                continue
-            seen_ids.add(row["block_id"])
-            results.append(_row_to_result(row, "fts"))
-
-    if mode in ("semantic", "hybrid"):
-        try:
-            query_emb = _llm.embed(q)
-            sem_rows = db.search_annotations_semantic(
-                _conn, query_emb, limit=limit, include_private=include_private
+        if mode in ("fts", "hybrid"):
+            fts_rows = db.search_annotations_fts(
+                conn, q, limit=limit, include_private=include_private
             )
-            for row in sem_rows:
+            for row in fts_rows:
                 if row["block_id"] in seen_ids:
                     continue
                 seen_ids.add(row["block_id"])
-                results.append(_row_to_result(row, "semantic"))
-        except Exception as e:
-            logger.warning("Semantic search failed: %s", e)
+                results.append(_row_to_result(row, "fts"))
 
-    SEARCH_REQUEST_SECONDS.labels(mode=mode).observe(time.monotonic() - t0)
-    return SearchResponse(query=q, results=results[:limit], total=len(results))
+        if mode in ("semantic", "hybrid"):
+            try:
+                with _llm_lock:
+                    query_emb = _llm.embed(q)
+                sem_rows = db.search_annotations_semantic(
+                    conn, query_emb, limit=limit, include_private=include_private
+                )
+                for row in sem_rows:
+                    if row["block_id"] in seen_ids:
+                        continue
+                    seen_ids.add(row["block_id"])
+                    results.append(_row_to_result(row, "semantic"))
+            except Exception as e:
+                logger.warning("Semantic search failed: %s", e)
+
+        SEARCH_REQUEST_SECONDS.labels(mode=mode).observe(time.monotonic() - t0)
+        return SearchResponse(query=q, results=results[:limit], total=len(results))
+    finally:
+        conn.close()
 
 
 @app.get("/stats")
 def stats() -> dict:
-    assert _conn is not None
-    return db.get_stats(_conn)
+    conn = _get_conn()
+    try:
+        return db.get_stats(conn)
+    finally:
+        conn.close()
 
 
-def run_server(config: Config) -> None:
+def run_server(config: Config, *, host: str = "127.0.0.1") -> None:
     import uvicorn
 
-    global _config, _conn, _llm
+    global _config, _db_path, _llm
     _config = config
-    _conn = db.connect(config.db_path)
-    db.init_schema(_conn)
+    _db_path = config.db_path
+
+    # Init schema once at startup, then discard the connection.
+    init_conn = db.connect(config.db_path)
+    db.init_schema(init_conn)
+    init_conn.close()
+
     _llm = LLMClient(config)
 
     logger.info("Starting search server on port %d", config.search_port)
-    uvicorn.run(app, host="127.0.0.1", port=config.search_port, log_level="info")
+    uvicorn.run(app, host=host, port=config.search_port, log_level="info")
