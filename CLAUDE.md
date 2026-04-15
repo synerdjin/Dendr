@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Dendr
 
-A personal knowledge compiler that watches Obsidian Daily Notes, annotates blocks with rich metadata via local LLMs (llama-cpp-python), and stores them in SQLite with FTS and vector search. Weekly digests surface actionable advice with emotional trajectory, task lifecycle tracking, closure review, and pattern detection. Claude (via Claude Code) handles synthesis and Q&A directly over annotations; all mechanical work uses local models.
+A personal knowledge compiler that watches Obsidian Daily Notes, annotates blocks with rich metadata via local LLMs (llama-cpp-python), and stores them in SQLite with FTS and vector search. Weekly digests surface actionable advice with task lifecycle tracking, closure review, and pattern detection. Claude (via Claude Code) handles synthesis and Q&A directly over annotations; all mechanical work uses local models.
 
 > **Upgrade note:** the concepts/entities wiki layer and claims layer were removed. If you have a pre-existing `state.sqlite`, rebuild it: `rm state.sqlite && dendr ingest`. The schema no longer contains `concepts`, `concepts_vec`, `claims`, `claims_fts`, or `claims_vec`.
 
@@ -49,10 +49,11 @@ DENDR_LOG_JSON=1 dendr daemon
 
 ```
 Daily/*.md  →  parser  →  privacy filter  →  queue (pending/processing/done)
-    →  Phase 1: annotate block (tagger model) + embed annotation text
+    →  Phase 1: annotate all blocks (tagger model stays loaded)
         →  BlockAnnotation (original text + rich metadata)
+    →  Phase 2: embed all annotations (embedding model stays loaded)
         →  annotations_vec (semantic search index)
-    →  Phase 2: commit in one transaction
+    →  Phase 3: commit in one transaction per block
         →  task lifecycle tracking (open → done/abandoned, sticky closures)
         →  block_annotations upsert + annotations_fts
 reconcile_closures (pre-ingest)
@@ -70,7 +71,7 @@ reconcile_closures (pre-ingest)
 - **db.py** — SQLite with FTS5 and `sqlite-vec`. Tables: `block_annotations`, `annotations_fts`, `annotations_vec`, `block_state`, `feedback_scores`, `task_events`. Uses WAL mode
 - **llm.py** — `LLMClient` wrapper around llama-cpp-python. Key methods: `annotate_block()` (tagger, temp=0.0) for rich block annotation, `embed()` for semantic search
 - **model_manager.py** — Declarative model manifest (`dendr-models.yaml`), HuggingFace download, SHA256 verification and locking
-- **pipeline.py** — Two-phase ingest pipeline: annotate+embed → commit. Runs `reconcile_closures` first to apply user-driven closures from digest.md. Task lifecycle tracking detects open→done/abandoned transitions and preserves user-sourced closures on re-annotation (sticky rule)
+- **pipeline.py** — Three-phase ingest pipeline: annotate → embed → commit. Batches by model to avoid VRAM thrashing. Runs `reconcile_closures` first to apply user-driven closures from digest.md. Task lifecycle tracking detects open→done/abandoned transitions and preserves user-sourced closures on re-annotation (sticky rule)
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
 - **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over block_annotations) and `/metrics` endpoints
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
@@ -79,10 +80,9 @@ reconcile_closures (pre-ingest)
 
 ### Models
 
-Declared in `dendr-models.yaml`. Three GGUF models run via llama-cpp-python:
-- **tagger** (Gemma 3 4B) — block annotation (emotional signals, life areas, urgency, causal links, concept tagging)
-- **vlm** (Llama 3.2 Vision 11B) — screenshot OCR, PDF extraction (gated, needs HF_TOKEN)
-- **embedding** (nomic-embed-text-v1.5) — 768d Matryoshka embeddings for semantic search over annotations
+Declared in `dendr-models.yaml`. Two GGUF models run via llama-cpp-python:
+- **tagger** (Gemma 4 E4B, Q4_K_M) — block annotation (emotional signals, life areas, urgency, causal links, concept tagging) + vision/OCR via mmproj. Single model handles both text annotation and image extraction
+- **embedding** (nomic-embed-text-v1.5, FP16) — 768d Matryoshka embeddings for semantic search over annotations
 
 ### Storage split
 

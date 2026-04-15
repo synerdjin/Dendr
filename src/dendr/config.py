@@ -23,9 +23,10 @@ def _default_data_dir() -> Path:
 class ModelConfig:
     """Local model configuration."""
 
-    tagger_model: str = "google_gemma-3-4b-it-Q4_K_M.gguf"
-    vlm_model: str = "Llama-3.2-11B-Vision-Instruct.Q4_K_M.gguf"
-    embedding_model: str = "nomic-embed-text-v1.5.Q8_0.gguf"
+    tagger_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"
+    tagger_mmproj: str = "mmproj-BF16.gguf"  # vision projector for Gemma 4
+    vlm_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"  # same model, loaded with mmproj
+    embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
     # Context sizes
     tagger_ctx: int = 4096
     vlm_ctx: int = 4096
@@ -160,6 +161,7 @@ class Config:
             "vault_id": self.vault_id,
             "models": {
                 "tagger_model": self.models.tagger_model,
+                "tagger_mmproj": self.models.tagger_mmproj,
                 "vlm_model": self.models.vlm_model,
                 "embedding_model": self.models.embedding_model,
                 "tagger_ctx": self.models.tagger_ctx,

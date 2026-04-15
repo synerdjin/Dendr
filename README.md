@@ -1,8 +1,8 @@
 # Dendr
 
-A personal knowledge compiler that turns Obsidian Daily Notes into a persistent, interlinked, confidence-scored knowledge base — without you ever doing bookkeeping.
+A personal knowledge compiler that watches Obsidian Daily Notes, annotates blocks with rich metadata via local LLMs, and stores them in SQLite with FTS and vector search. Weekly digests surface actionable advice with task lifecycle tracking, closure review, and pattern detection.
 
-Inspired by [Karpathy's LLM-wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): raw sources flow in, an LLM maintains a structured wiki of concepts, entities, and claims with cross-references, contradiction detection, and temporal metadata.
+**Local LLM handles all mechanical work** — block annotation, tagging, embeddings, vision/OCR. **Claude (via Claude Code)** is reserved for weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
 
 ## How it works
 
@@ -10,14 +10,11 @@ Inspired by [Karpathy's LLM-wiki pattern](https://gist.github.com/karpathy/442a6
 Daily Notes (you write here)
     ↓ watcher detects changes
     ↓ block-level parsing + privacy filter
-    ↓ local LLM extracts claims, concepts, entities (SPO triples)
-    ↓ embedding-based concept canonicalization
-    ↓ wiki pages created/updated (LLM-zone rule protects your edits)
-    ↓ claims stored with {confidence, source, date, status}
-Wiki/ (you read here, on any device)
+    ↓ Phase 1: local LLM annotates blocks (gist, type, emotional signals, urgency, concepts)
+    ↓ Phase 2: embed annotation text for semantic search
+    ↓ Phase 3: commit to SQLite (annotations + FTS + vector index + task events)
+Wiki/digest.md (you read here, on any device)
 ```
-
-**Local LLM handles all mechanical work** — claim extraction, tagging, embeddings, wiki page updates, nightly lint. **Claude (via Claude Code)** is reserved for weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
 
 ## Requirements
 
@@ -29,7 +26,7 @@ Wiki/ (you read here, on any device)
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Dendr.git
+git clone https://github.com/synerdjin/Dendr.git
 cd Dendr
 pip install -e .
 ```
@@ -40,8 +37,7 @@ pip install -e .
 # 1. Initialize your vault
 dendr init /path/to/your/obsidian/vault
 
-# 2. Download models (requires HF_TOKEN for gated models)
-export HF_TOKEN=hf_your_token_here
+# 2. Download models
 dendr models pull
 
 # 3. Run the daemon (watches Daily/ for changes)
@@ -53,7 +49,10 @@ dendr ingest
 # 5. Search your knowledge base
 dendr search "machine learning"
 
-# 6. Start the search HTTP server (for Claude Code integration)
+# 6. Generate a weekly digest
+dendr digest --claude
+
+# 7. Start the search HTTP server (for Claude Code integration)
 dendr serve
 ```
 
@@ -64,58 +63,44 @@ dendr serve
 | `dendr init <vault>` | Initialize vault structure + database + Claude prompts |
 | `dendr daemon` | Watch `Daily/` and auto-ingest on changes |
 | `dendr ingest` | Run a single ingest cycle |
-| `dendr search <query>` | Search claims (FTS, semantic, or hybrid) |
-| `dendr lint` | Run health checks (contradictions, stale claims, orphans) |
+| `dendr reprocess` | Reset block state and reprocess everything from scratch |
+| `dendr search <query>` | Search annotations (FTS, semantic, or hybrid) |
 | `dendr serve` | Start search server on `localhost:7777` |
 | `dendr stats` | Show knowledge base statistics |
+| `dendr digest` | Generate weekly digest briefing |
+| `dendr digest --claude` | Also generate Claude synthesis prompt |
 | `dendr models pull` | Download all models from manifest |
-| `dendr models pull --role enrichment` | Download one model by role |
 | `dendr models verify` | Check SHA256 integrity of models |
 | `dendr models list` | Show model status table |
 | `dendr models lock` | Pin SHA256 hashes into manifest |
-| `dendr migrate-logseq <dir>` | Migrate a LogSeq vault to Obsidian (dry-run by default) |
 
 ## Model setup
 
 Models are declared in `dendr-models.yaml` (version-controlled). Download them all with one command:
 
 ```bash
-# Set HF token for gated models (Llama 3.2 Vision)
-export HF_TOKEN=hf_your_token_here
-
-# Download all models
 dendr models pull
-
-# Verify integrity
 dendr models verify
-
-# Pin exact hashes for reproducibility (commit the result)
-dendr models lock
+dendr models lock    # pin hashes for reproducibility
 ```
 
-| Role | Model | Size | Gated? |
-|------|-------|------|--------|
-| Fast tagger | [Gemma 3 4B Instruct Q4_K_M](https://huggingface.co/google/gemma-3-4b-it-gguf) | ~3 GB | No |
-| Vision/OCR | [Llama 3.2 Vision 11B Q4_K_M](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct-GGUF) | ~7 GB | Yes |
-| Embeddings | [nomic-embed-text-v1.5 Q8_0](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | No |
+| Role | Model | Size | Purpose |
+|------|-------|------|---------|
+| Tagger + Vision | [Gemma 4 E4B Q4_K_M](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF) | ~5 GB | Block annotation, concept tagging, vision/OCR |
+| Vision projector | mmproj-BF16 (same repo) | ~1 GB | Bridges vision encoder for image input |
+| Embeddings | [nomic-embed-text-v1.5 FP16](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
-Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux).
+Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux). Only one model is loaded in VRAM at a time.
 
 ## Docker
 
 For reproducible deployment with GPU access:
 
 ```bash
-# 1. Copy and fill in environment
-cp .env.example .env
-
-# 2. Download models into the data volume
-docker compose run daemon dendr models pull
-
-# 3. Start daemon + search server
+# Start daemon + search server + monitoring
 docker compose up -d
 
-# 4. Check it's working
+# Check it's working
 curl http://localhost:7777/stats
 ```
 
@@ -129,99 +114,59 @@ Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-nat
 Vault/                          (iCloud-synced)
   Daily/YYYY-MM-DD.md           your raw notes (never modified by Dendr)
   Wiki/
-    schema.md                   the spec that governs the wiki
-    index.md                    auto-generated catalog
+    schema.md                   annotation spec
     log.md                      append-only activity log
-    concepts/<slug>.md          LLM-maintained concept pages
-    entities/<slug>.md          LLM-maintained entity pages
-    summaries/weekly-*.md       Claude-produced weekly syntheses
+    digest.md                   weekly digest (with closure markers)
+    _digest_prompt.md           Claude synthesis input
+    _user_context.md            stable user background for Claude
 
 %LOCALAPPDATA%\Dendr\           (PC-only, never synced)
-  state.sqlite                  claims + FTS5 + vector search
+  state.sqlite                  annotations + FTS5 + vector search
   queue/                        two-phase commit processing queue
+  models/                       GGUF model weights
   ft-pairs.jsonl                fine-tuning corpus (logged automatically)
 ```
 
-### Claim lifecycle
+### Block annotation
 
-Every factual statement extracted from your notes becomes a **claim** with:
-- SPO triple (`subject`, `predicate`, `object`)
-- `confidence` score (0.0–1.0)
-- `status`: created → reinforced → challenged → superseded
-- Source provenance back to the exact daily note block
+Every block from a daily note is annotated with structured metadata:
+- `gist` — one-line summary
+- `block_type` — reflection, task, decision, question, observation, vent, plan, log_entry
+- `life_areas` — work, health, relationships, finance, learning, creative, meta
+- `emotional_valence` / `intensity` — emotional signals (-1.0 to +1.0, 0.0 to 1.0)
+- `urgency` / `importance` — frozen at source date, not today
+- `completion_status` — open, done, blocked, abandoned (tracked across re-annotations)
+- `concepts` — topic tags for recurring theme detection
+- `causal_links` — extracted cause-effect relationships
 
-Contradictions are detected automatically when two non-superseded claims share the same `subject|predicate` but differ in `object`.
+### Task lifecycle
 
-### The LLM-zone rule
-
-Wiki pages have two zones: a **human-zone** (your edits, never touched) and an **llm-zone** (system-managed). If you edit a page, Dendr detects the drift and switches to append-only mode for that page.
+Task/plan blocks have `completion_status` tracked across annotations. Status transitions are logged as `task_events`. The sticky-closure rule prevents re-annotation from clobbering user-driven closures: if you mark a task done via the digest, a re-ingest won't reopen it.
 
 ### Privacy
 
-Blocks containing API keys, passwords, SSNs, or tagged with `#dendr-private` are stored locally but **never sent to Claude**. You can also use `#private` or `#redact` tags.
-
-## LogSeq migration
-
-If you're coming from LogSeq, Dendr can migrate your vault to Obsidian format:
-
-```bash
-# Dry-run first (no files written)
-dendr migrate-logseq /path/to/logseq/graph
-
-# Execute the migration
-dendr migrate-logseq /path/to/logseq/graph --execute
-
-# Target a specific Obsidian vault (defaults to your configured vault)
-dendr migrate-logseq /path/to/logseq/graph --vault /path/to/obsidian/vault --execute
-```
-
-The migration converts:
-- `journals/` entries to `Daily/YYYY-MM-DD.md` with proper date formatting
-- `pages/` to Obsidian-compatible markdown (syntax transformations, wikilinks)
-- `assets/` are copied to `Attachments/`
-- LogSeq-specific syntax (`collapsed::`, `DONE`, block properties) is cleaned up
-- Page metadata (created/updated timestamps) is preserved from `pages-metadata.edn`
+Blocks containing API keys, passwords, SSNs, or tagged with `#dendr-private` / `#private` / `#redact` are stored locally but **never sent to Claude**.
 
 ## Observability
 
-Dendr includes a Prometheus + Grafana monitoring stack for real-time visibility into the pipeline.
-
-### Quick start
+Dendr includes a Prometheus + Grafana monitoring stack:
 
 ```bash
-# Start the monitoring stack (runs alongside the native daemon)
 docker compose up -d prometheus grafana gpu-exporter
-
-# Access dashboards
-# Grafana:    http://localhost:3000  (no login required)
+# Grafana:    http://localhost:3000
 # Prometheus: http://localhost:9090
 ```
 
 The daemon exposes metrics on `localhost:9100/metrics` and the search server on `localhost:7777/metrics`.
 
-### What's monitored
-
 | Category | Metrics |
 |----------|---------|
-| **Models** | Which model is loaded, load time, inference latency per model+task, tokens/sec |
-| **Pipeline** | Blocks processed/hour, claims extracted, ingest cycle duration, backpressure status |
-| **Knowledge** | Contradiction rate, concept canonicalization reuse ratio, active claims, total concepts |
-| **Search** | Request latency by mode (FTS/semantic/hybrid), requests/minute |
-| **GPU** | Utilization %, VRAM used/free, temperature, power draw, clock speeds |
-
-### Dashboard
-
-A pre-built Grafana dashboard auto-provisions with 5 rows:
-
-1. **Status at a Glance** -- GPU gauges, active model, queue depth, backpressure indicator
-2. **Pipeline Throughput** -- blocks/hour, claims/hour, ingest cycle duration, queue over time
-3. **Model Performance** -- inference latency, tokens/sec, model load times, JSON parse failures
-4. **Knowledge Quality** -- contradictions, canonicalization reuse ratio, claim/concept totals
-5. **Search Server** -- latency by mode, request rate
+| **Models** | Which model is loaded, load time, inference latency, tokens/sec |
+| **Pipeline** | Blocks processed/hour, ingest cycle duration, queue depth |
+| **Search** | Request latency by mode (FTS/semantic/hybrid) |
+| **GPU** | Utilization %, VRAM used/free, temperature, power draw |
 
 ### Structured logging
-
-Set `DENDR_LOG_JSON=1` to emit JSON-structured log lines (useful in Docker or for log aggregation):
 
 ```bash
 DENDR_LOG_JSON=1 dendr daemon
@@ -231,16 +176,13 @@ DENDR_LOG_JSON=1 dendr daemon
 
 `dendr init` generates three Claude Code session prompts in `.claude/`:
 
-- **weekly.md** — weekly synthesis (resolve contradictions, update digest)
-- **qa.md** — on-demand Q&A grounded in your wiki
-- **schema-review.md** — monthly schema evolution review
-
-Token budget: ~30k input per weekly session, ~20k per Q&A. Fits comfortably in a Max subscription.
+- **digest.md** — weekly synthesis (read `_digest_prompt.md`, write `digest.md`)
+- **qa.md** — on-demand Q&A grounded in your annotations
+- **schema-review.md** — monthly annotation schema evolution review
 
 ## Future
 
-- **Voice transcription** (whisper.cpp) — deferred to v2
-- **Fine-tuning** — all LLM calls are logged as training pairs in `ft-pairs.jsonl`, ready for QLoRA on the local model
+- **Fine-tuning** — all LLM calls are logged as training pairs in `ft-pairs.jsonl`, ready for QLoRA
 - **Multi-vault** support via `vault_id` binding
 
 ## License
