@@ -29,11 +29,18 @@ dendr daemon                          # watch Daily/ for changes
 dendr ingest                          # single ingest cycle
 dendr search "query" --mode hybrid
 dendr serve                           # search server on :7777
+dendr serve --host 0.0.0.0            # bind all interfaces (Docker)
 dendr stats
 dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
+
+# Search API (requires dendr serve or Docker search container)
+curl "http://localhost:7777/search?q=your+query&mode=hybrid&limit=10"
+curl "http://localhost:7777/search?q=your+query&mode=semantic&limit=5"
+curl "http://localhost:7777/search?q=your+query&mode=fts&limit=10"
+curl "http://localhost:7777/stats"
 
 # Docker (requires nvidia-container-toolkit)
 docker compose up -d                  # daemon + search + monitoring
@@ -73,7 +80,7 @@ reconcile_closures (pre-ingest)
 - **model_manager.py** — Declarative model manifest (`dendr-models.yaml`), HuggingFace download, SHA256 verification and locking
 - **pipeline.py** — Three-phase ingest pipeline: annotate → embed → commit. Batches by model to avoid VRAM thrashing. Runs `reconcile_closures` first to apply user-driven closures from digest.md. Task lifecycle tracking detects open→done/abandoned transitions and preserves user-sourced closures on re-annotation (sticky rule)
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
-- **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over block_annotations) and `/metrics` endpoints
+- **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over block_annotations), `/stats`, and `/metrics` endpoints. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
 - **digest.py** — Weekly digest generator with two-layer context: narrative blocks (original text + annotations) and pattern summaries (topics, life areas, emotional trajectory, task lifecycle). Renders a `## Task Review` section with age-bucketed closure markers; per-section feedback markers feed `feedback_scores` for effectiveness tracking
 - **migrate_logseq.py** — One-shot LogSeq-to-Obsidian vault migration
