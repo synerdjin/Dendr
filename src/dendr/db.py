@@ -37,9 +37,7 @@ def _load_vec(conn: sqlite3.Connection) -> None:
         _VEC_AVAILABLE = False
 
 
-def connect(
-    db_path: Path, *, check_same_thread: bool = True
-) -> sqlite3.Connection:
+def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open (or create) the Dendr state database."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
