@@ -46,12 +46,6 @@ INFERENCE_TOKENS = Counter(
     ["model_role", "direction"],
 )
 
-INFERENCE_JSON_FAILURES = Counter(
-    "dendr_inference_json_parse_failures_total",
-    "Number of times LLM output failed JSON parsing",
-    ["task"],
-)
-
 # ---------------------------------------------------------------------------
 # Pipeline / queue
 # ---------------------------------------------------------------------------
@@ -89,9 +83,9 @@ SEARCH_REQUEST_SECONDS = Histogram(
 # ---------------------------------------------------------------------------
 # Knowledge base gauges (updated periodically)
 # ---------------------------------------------------------------------------
-ANNOTATIONS_TOTAL = Gauge(
-    "dendr_annotations_total",
-    "Total block annotations in the knowledge base",
+BLOCKS_TOTAL = Gauge(
+    "dendr_blocks_total",
+    "Total blocks in the knowledge base",
 )
 
 
@@ -134,6 +128,6 @@ def collect_db_metrics(conn) -> None:
         from dendr import db
 
         stats = db.get_stats(conn)
-        ANNOTATIONS_TOTAL.set(stats.get("annotations", 0))
+        BLOCKS_TOTAL.set(stats.get("blocks", 0))
     except Exception as e:
         logger.debug("Failed to collect DB metrics: %s", e)

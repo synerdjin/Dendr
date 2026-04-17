@@ -151,10 +151,10 @@
       "gridPos": { "h": 6, "w": 4, "x": 20, "y": 1 },
       "id": 6,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area", "textMode": "auto" },
-      "title": "Annotations",
+      "title": "Blocks",
       "type": "stat",
       "targets": [
-        { "expr": "dendr_annotations_total", "legendFormat": "", "refId": "A" }
+        { "expr": "dendr_blocks_total", "legendFormat": "", "refId": "A" }
       ]
     },
 

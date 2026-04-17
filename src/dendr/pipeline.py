@@ -1,10 +1,10 @@
-"""Core ingestion pipeline — orchestrates block annotation and storage.
+"""Core ingestion pipeline — parse, privacy, embed, commit.
 
-Annotation-first architecture:
+Raw-text architecture:
   1. Reconcile closures from digest.md
-  2. Parse daily notes, find dirty blocks
-  3. Annotate blocks (tagger model) + embed annotation text
-  4. Commit annotations, annotation embeddings, task events
+  2. Parse daily notes, find dirty blocks (hash-based dedup)
+  3. Embed block text (Nomic)
+  4. Commit blocks + embeddings + checkbox-driven task events
 """
 
 from __future__ import annotations
@@ -21,9 +21,10 @@ from dendr.config import Config
 from dendr.llm import LLMClient
 from dendr.metrics import BLOCKS_PROCESSED, INGEST_CYCLE_SECONDS
 from dendr.models import (
+    CHECKBOX_CLOSED,
+    CHECKBOX_NONE,
+    CHECKBOX_OPEN,
     Block,
-    BlockAnnotation,
-    BlockType,
     QueueItem,
 )
 from dendr.parser import inject_block_ids, parse_closures, parse_daily_note
@@ -53,8 +54,8 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
         inject_block_ids(note_path, blocks)
 
         for block in blocks:
-            existing = db.get_block_state(conn, block.block_id)
-            if existing is None or existing["block_hash"] != block.block_hash:
+            stored_hash = db.get_block_hash(conn, block.block_id)
+            if stored_hash != block.block_hash:
                 dirty_blocks.append(block)
 
     return dirty_blocks
@@ -70,6 +71,7 @@ def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
             source_file=block.source_file,
             block_hash=block.block_hash,
             block_text=block.text,
+            checkbox_state=block.checkbox_state,
             private=block.private,
             attachment_path=block.attachment_path,
             attachment_type=block.attachment_type,
@@ -79,96 +81,64 @@ def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
     return count
 
 
-def _build_annotation(
-    item: QueueItem, raw: dict, model_version: str
-) -> BlockAnnotation:
-    """Build a BlockAnnotation from raw LLM output."""
-    raw_type = raw.get("block_type", "observation")
-    try:
-        block_type = BlockType(raw_type)
-    except ValueError:
-        block_type = BlockType.OBSERVATION
+def _track_checkbox_transition(conn: sqlite3.Connection, item: QueueItem) -> None:
+    """Log task_events for checkbox-driven transitions.
 
-    return BlockAnnotation(
-        block_id=item.block_id,
-        source_file=item.source_file,
-        source_date=_extract_source_date(item.source_file),
-        original_text=item.block_text,
-        gist=raw.get("gist", ""),
-        block_type=block_type,
-        life_areas=raw.get("life_areas", []),
-        emotional_valence=float(raw.get("emotional_valence", 0.0)),
-        intensity=float(raw.get("intensity", 0.5)),
-        urgency=raw.get("urgency"),
-        importance=raw.get("importance"),
-        completion_status=raw.get("completion_status"),
-        causal_links=raw.get("causal_links", []),
-        concepts=raw.get("concepts", []),
-        private=item.private,
-        model_version=model_version,
-        prompt_version=LLMClient.ANNOTATION_PROMPT_VERSION,
-    )
-
-
-# Statuses the user can set via the digest closure flow. If any of these
-# are already on record for a block, a re-annotation that returns
-# open/None must NOT reopen them — the tagger only reads the raw text
-# ("- [ ] task"), so it would clobber user-driven closures on every
-# re-ingest.
-_STICKY_CLOSED_STATUSES = {"done", "abandoned", "snoozed", "still-live"}
-
-
-def _track_task_lifecycle(
-    conn: sqlite3.Connection, annotation: BlockAnnotation
-) -> None:
-    """Detect task status transitions and log lifecycle events.
-
-    Compares the new annotation against any existing annotation for the same
-    block_id. If completion_status changed (e.g. open -> done), log it.
-    If this is a new task/plan block, log a 'created' event.
-
-    Mutates `annotation.completion_status` to preserve sticky user-driven
-    closures when the tagger tries to reopen them.
+    Creates a `created` event when a task first appears as open, and a
+    `closed` event (reason='done') when `- [ ]` becomes `- [x]`.
     """
-    if annotation.block_type.value not in ("task", "plan"):
+    if item.checkbox_state == CHECKBOX_NONE:
         return
 
-    existing = db.get_block_annotation(conn, annotation.block_id)
-    new_status = annotation.completion_status
-    source_date = annotation.source_date
+    existing = db.get_block(conn, item.block_id)
+    source_date = _extract_source_date(item.source_file)
 
     if existing is None:
-        # New task — log creation
-        if new_status in (None, "open"):
-            db.insert_task_event(conn, annotation.block_id, "created", source_date)
+        if item.checkbox_state == CHECKBOX_OPEN:
+            db.insert_task_event(
+                conn, item.block_id, "created", source_date, source="auto"
+            )
+        elif item.checkbox_state == CHECKBOX_CLOSED:
+            # Task created and closed in the same write — log both so
+            # completion stats still reflect it.
+            db.insert_task_event(
+                conn, item.block_id, "created", source_date, source="auto"
+            )
+            db.insert_task_event(
+                conn,
+                item.block_id,
+                "closed",
+                source_date,
+                reason="done",
+                source="auto",
+            )
         return
 
-    old_status = existing["completion_status"]
-
-    # Sticky closures: once the user has closed a task via the digest
-    # flow, a subsequent re-annotation must not silently reopen it.
-    if old_status in _STICKY_CLOSED_STATUSES and new_status in (None, "open"):
-        annotation.completion_status = old_status
+    old_state = existing["checkbox_state"]
+    if old_state == item.checkbox_state:
         return
 
-    if old_status == new_status:
-        return
-
-    if new_status == "done":
-        db.insert_task_event(conn, annotation.block_id, "completed", source_date)
-    elif new_status == "abandoned":
-        db.insert_task_event(conn, annotation.block_id, "abandoned", source_date)
-    elif new_status == "blocked":
-        db.insert_task_event(conn, annotation.block_id, "blocked", source_date)
+    if old_state == CHECKBOX_OPEN and item.checkbox_state == CHECKBOX_CLOSED:
+        db.insert_task_event(
+            conn,
+            item.block_id,
+            "closed",
+            source_date,
+            reason="done",
+            source="auto",
+        )
+    elif old_state == CHECKBOX_CLOSED and item.checkbox_state == CHECKBOX_OPEN:
+        db.insert_task_event(
+            conn,
+            item.block_id,
+            "created",
+            source_date,
+            source="auto",
+        )
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
-    """Process pending queue items through annotation, embedding, and commit.
-
-    Phase 1 (tagger model):    annotate all blocks (model stays loaded)
-    Phase 2 (embedding model): embed all annotations (model stays loaded)
-    Phase 3 (DB commit):       persist annotations, embeddings, task events
-    """
+    """Process pending queue items: embed raw text, commit."""
     queue.recover_stale(config)
     pending = queue.get_pending(config)
     if not pending:
@@ -181,71 +151,53 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not claimed:
         return 0
 
-    # ── Phase 1: Annotate all blocks (tagger model) ──────────────────
+    # ── Embed all blocks (embedding model stays loaded) ──────────────
     total = len(claimed)
-    logger.info("Phase 1/3: annotating %d blocks", total)
-    annotated: dict[str, tuple[QueueItem, BlockAnnotation]] = {}
-
+    logger.info("Embedding %d blocks", total)
+    embeddings: dict[str, bytes | None] = {}
     for idx, item in enumerate(claimed, 1):
         try:
-            logger.info(
-                "Phase 1/3: annotating block %d/%d: %s", idx, total, item.block_id
-            )
-            raw_ann = llm.annotate_block(item.block_text)
-            annotation = _build_annotation(
-                item, raw_ann, llm.config.models.tagger_model
-            )
-            annotated[item.block_id] = (item, annotation)
+            logger.info("Embedding block %d/%d: %s", idx, total, item.block_id)
+            embeddings[item.block_id] = llm.embed(item.block_text)
         except Exception as e:
-            logger.error("Failed to annotate block %s: %s", item.block_id, e)
+            logger.warning("Failed to embed block %s: %s", item.block_id, e)
+            embeddings[item.block_id] = None
 
-    # ── Phase 2: Embed all annotations (embedding model) ─────────────
-    total2 = len(annotated)
-    logger.info("Phase 2/3: embedding %d blocks", total2)
-    embeddings: dict[str, bytes | None] = {}
-
-    for idx, (block_id, (item, annotation)) in enumerate(annotated.items(), 1):
-        try:
-            embed_text = annotation.gist or item.block_text
-            embeddings[block_id] = llm.embed(embed_text)
-        except Exception as e:
-            logger.warning("Failed to embed annotation %s: %s", block_id, e)
-            embeddings[block_id] = None
-
-    # ── Phase 3: Commit annotations + embeddings ─────────────────────
-    total3 = len(annotated)
-    logger.info("Phase 3/3: committing %d blocks", total3)
+    # ── Commit blocks + embeddings + task events ─────────────────────
+    logger.info("Committing %d blocks", total)
     processed = 0
 
-    for block_id, (item, annotation) in annotated.items():
-        ann_embedding = embeddings.get(block_id)
+    for item in claimed:
+        block = Block(
+            block_id=item.block_id,
+            source_file=item.source_file,
+            line_start=0,
+            line_end=0,
+            text=item.block_text,
+            block_hash=item.block_hash,
+            checkbox_state=item.checkbox_state,
+            private=item.private,
+            attachment_path=item.attachment_path,
+            attachment_type=item.attachment_type,
+        )
+        source_date = _extract_source_date(item.source_file)
+
         try:
             conn.execute("BEGIN")
             try:
-                _track_task_lifecycle(conn, annotation)
+                _track_checkbox_transition(conn, item)
+                db.upsert_block(conn, block, source_date)
 
-                db.upsert_block_annotation(conn, annotation)
-
+                ann_embedding = embeddings.get(item.block_id)
                 if ann_embedding is not None:
                     try:
-                        db.insert_annotation_embedding(
-                            conn, item.block_id, ann_embedding
-                        )
+                        db.insert_block_embedding(conn, item.block_id, ann_embedding)
                     except Exception as e:
                         logger.warning(
-                            "Failed to store annotation embedding %s: %s",
-                            block_id,
+                            "Failed to store block embedding %s: %s",
+                            item.block_id,
                             e,
                         )
-
-                db.upsert_block_state(
-                    conn,
-                    item.block_id,
-                    item.source_file,
-                    item.block_hash,
-                    annotation.model_version,
-                    annotation.prompt_version,
-                )
 
                 conn.execute("COMMIT")
             except Exception:
@@ -268,20 +220,21 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     return processed
 
 
-# Closure event_type for each user-driven status.
-_CLOSURE_EVENT_TYPES = {
-    "done": "completed",
-    "abandoned": "abandoned",
-    "snoozed": "snoozed",
-    "still-live": "reopened",
+# Closure event details for each user-driven status. Maps the marker
+# status in the digest to (completion_status, event_reason) pairs.
+_CLOSURE_DETAILS = {
+    "done": ("done", "done"),
+    "abandoned": ("abandoned", "abandoned"),
+    "snoozed": ("snoozed", "snoozed"),
+    "still-live": ("open", "reopened"),
 }
 
 
 def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
-    """Apply closure markers from Wiki/digest.md to block annotations.
+    """Apply closure markers from Wiki/digest.md to block rows.
 
     Runs before the scan/ingest phase so user closures are in place
-    before any re-annotation can clobber them.
+    before any re-parse can log spurious checkbox transitions.
     """
     digest_path = config.wiki_dir / "digest.md"
     if not digest_path.exists():
@@ -301,29 +254,30 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     today = datetime.now().strftime("%Y-%m-%d")
 
     for closure in closures:
-        existing = db.get_block_annotation(conn, closure.block_id)
+        existing = db.get_block(conn, closure.block_id)
         if existing is None:
             continue
 
-        old_status = existing["completion_status"]
-        new_status = closure.status
+        details = _CLOSURE_DETAILS.get(closure.status)
+        if details is None:
+            continue
+        new_completion, event_reason = details
 
-        # "still-live" reopens a closed task — set status back to open.
-        stored_status = "open" if new_status == "still-live" else new_status
-
-        if old_status == stored_status:
+        old_completion = existing["completion_status"]
+        if old_completion == new_completion:
             continue
 
-        db.update_completion_status(conn, closure.block_id, stored_status)
-        event_type = _CLOSURE_EVENT_TYPES.get(new_status)
-        if event_type:
-            db.insert_task_event(
-                conn,
-                closure.block_id,
-                event_type,
-                today,
-                source="user",
-            )
+        db.update_completion_status(conn, closure.block_id, new_completion)
+
+        event_type = "created" if event_reason == "reopened" else "closed"
+        db.insert_task_event(
+            conn,
+            closure.block_id,
+            event_type,
+            today,
+            reason=event_reason,
+            source="user",
+        )
         applied += 1
 
     if applied > 0:

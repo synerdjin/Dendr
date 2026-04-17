@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 
+from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN
 from dendr.parser import (
     get_file_hash,
     inject_block_ids,
@@ -114,6 +115,42 @@ def test_file_hash():
         h2 = get_file_hash(Path(f.name))
         assert h1 == h2
         assert len(h1) == 16
+
+
+# ── Checkbox state ────────────────────────────────────────────────────
+
+
+def test_checkbox_state_open():
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("- [ ] open task\n")
+        f.flush()
+        blocks = parse_daily_note(Path(f.name))
+        assert len(blocks) == 1
+        assert blocks[0].checkbox_state == CHECKBOX_OPEN
+
+
+def test_checkbox_state_closed():
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("- [x] done thing\n")
+        f.flush()
+        blocks = parse_daily_note(Path(f.name))
+        assert len(blocks) == 1
+        assert blocks[0].checkbox_state == CHECKBOX_CLOSED
+
+
+def test_checkbox_state_none_for_prose():
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("Just a reflection about today.\n")
+        f.flush()
+        blocks = parse_daily_note(Path(f.name))
+        assert len(blocks) == 1
+        assert blocks[0].checkbox_state == CHECKBOX_NONE
 
 
 # ── Closure markers ────────────────────────────────────────────────

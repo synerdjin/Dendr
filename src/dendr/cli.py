@@ -178,11 +178,11 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     conn = connect(config.db_path)
     init_schema(conn)
 
-    # Clear block state so all blocks appear dirty
-    count = conn.execute("SELECT COUNT(*) as n FROM block_state").fetchone()["n"]
-    conn.execute("DELETE FROM block_state")
-    conn.commit()
-    click.echo(f"Cleared {count} block state entries")
+    # Blank the hash so every block is treated as dirty on next ingest.
+    # completion_status is preserved so user closures survive re-ingest.
+    count = conn.execute("SELECT COUNT(*) as n FROM blocks").fetchone()["n"]
+    conn.execute("UPDATE blocks SET block_hash = ''")
+    click.echo(f"Marked {count} blocks as dirty")
 
     # Clear done queue
     done_count = 0
@@ -233,7 +233,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
     seen_ids: set[str] = set()
 
     if mode in ("fts", "hybrid"):
-        fts = dendr_db.search_annotations_fts(conn, query, limit=limit)
+        fts = dendr_db.search_blocks_fts(conn, query, limit=limit)
         for r in fts:
             if r["block_id"] in seen_ids:
                 continue
@@ -241,7 +241,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
             results.append(
                 {
                     "block_id": r["block_id"],
-                    "gist": r["gist"],
+                    "text": r["text"],
                     "source": r["source_file"],
                     "date": r["source_date"],
                     "type": "fts",
@@ -252,7 +252,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
         try:
             llm = LLMClient(config)
             emb = llm.embed(query)
-            sem = dendr_db.search_annotations_semantic(conn, emb, limit=limit)
+            sem = dendr_db.search_blocks_semantic(conn, emb, limit=limit)
             for r in sem:
                 if r["block_id"] in seen_ids:
                     continue
@@ -260,7 +260,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
                 results.append(
                     {
                         "block_id": r["block_id"],
-                        "gist": r["gist"],
+                        "text": r["text"],
                         "source": r["source_file"],
                         "date": r["source_date"],
                         "type": "semantic",
@@ -276,7 +276,8 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
         return
 
     for r in results[:limit]:
-        click.echo(f"  [{r['type']:8s}] {r['date']}  {r['gist'][:120]}")
+        snippet = r["text"].splitlines()[0][:120] if r["text"] else ""
+        click.echo(f"  [{r['type']:8s}] {r['date']}  {snippet}")
 
 
 @main.command()
@@ -354,7 +355,7 @@ def stats(data_dir: str | None) -> None:
     pending = queue.pending_count(config)
     conn.close()
 
-    click.echo(f"Annotations:       {s['annotations']}")
+    click.echo(f"Blocks:            {s['blocks']}")
     click.echo(f"Open tasks:        {s['open_tasks']}")
     click.echo(f"Pending queue:     {pending}")
 

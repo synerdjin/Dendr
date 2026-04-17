@@ -1,15 +1,14 @@
 """LLM client abstraction for local inference via llama-cpp-python.
 
-Manages model lifecycle, provides typed completion methods,
-and logs all calls to ft-pairs.jsonl for future fine-tuning.
+Manages model lifecycle for the embedding model and the vision/OCR model.
+Text annotation has been removed — Claude handles classification, affect
+reading, and narrative synthesis directly from raw block text.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +16,7 @@ import numpy as np
 
 from dendr.config import Config
 from dendr.metrics import (
-    INFERENCE_JSON_FAILURES,
     INFERENCE_SECONDS,
-    INFERENCE_TOKENS,
     MODEL_LOAD_SECONDS,
     MODEL_LOADED,
 )
@@ -29,27 +26,11 @@ logger = logging.getLogger(__name__)
 # Lazy-loaded model instances
 _models: dict[str, Any] = {}
 
-# Tagger occasionally emits the literal string "null" (or "none"/"n/a"/"") for
-# optional scalar fields instead of real JSON null. Normalize at the boundary
-# so the rest of the system never sees these.
-_NULLISH_STRINGS = {"null", "none", "n/a", "na", ""}
-
-
-def _normalize_annotation_raw(raw: dict) -> dict:
-    """Coerce nullish strings on optional scalar fields to real None."""
-    for key in ("urgency", "importance", "completion_status"):
-        val = raw.get(key)
-        if isinstance(val, str) and val.strip().lower() in _NULLISH_STRINGS:
-            raw[key] = None
-    return raw
-
 
 def _model_role_from_path(model_path: Path) -> str:
     """Derive a short role label from a model filename for metrics."""
     name = model_path.stem.lower()
     if "gemma" in name:
-        return "tagger"
-    if "llama" in name and "vision" in name:
         return "vision"
     if "nomic" in name or "embed" in name:
         return "embedding"
@@ -86,7 +67,6 @@ def _get_model(
     # Use a different cache key for vision vs text-only mode of the same model
     key = str(model_path) + (":vision" if chat_handler else "")
     if key not in _models:
-        # Unload other models to free VRAM before loading a new one
         _unload_all_except(None)
         role = _model_role_from_path(model_path)
         if chat_handler:
@@ -116,26 +96,8 @@ def unload_all() -> None:
     _models.clear()
 
 
-def _log_ft_pair(
-    config: Config, prompt: str, response: str, model: str, task: str
-) -> None:
-    """Append a (prompt, response) pair for future fine-tuning."""
-    entry = {
-        "prompt": prompt,
-        "response": response,
-        "model_version": model,
-        "prompt_version": "v1",
-        "task": task,
-        "ts": datetime.now().isoformat(),
-    }
-    with open(config.ft_pairs_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-
-
 class LLMClient:
-    """Unified interface to local LLM models."""
-
-    ANNOTATION_PROMPT_VERSION = "v3"
+    """Local-inference surface: embeddings + vision/OCR."""
 
     def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
@@ -157,11 +119,8 @@ class LLMClient:
                     )
                     raise RuntimeError(msg)
         except FileNotFoundError:
-            # No manifest — check files directly by config filenames
             missing = []
             for name in [
-                self.config.models.tagger_model,
-                self.config.models.tagger_mmproj,
                 self.config.models.embedding_model,
             ]:
                 if not (self.config.models_dir / name).exists():
@@ -178,150 +137,12 @@ class LLMClient:
     def _model_path(self, filename: str) -> Path:
         return self.config.models_dir / filename
 
-    def _tagger_model(self) -> Any:
-        return _get_model(
-            self._model_path(self.config.models.tagger_model),
-            n_ctx=self.config.models.tagger_ctx,
-        )
-
     def _embedding_model(self) -> Any:
         return _get_model(
             self._model_path(self.config.models.embedding_model),
             n_ctx=512,
             embedding=True,
         )
-
-    def annotate_block(self, block_text: str) -> dict:
-        """Rich annotation of a block — the primary extraction step.
-
-        Uses the tagger model (fast) to classify block type, emotional signals,
-        life areas, urgency/importance, and extract a one-line gist.
-
-        Returns a dict matching BlockAnnotation fields.
-        """
-        prompt = f"""Annotate this personal daily note block with structured metadata.
-
-TEXT BLOCK:
-{block_text}
-
-Return ONLY valid JSON:
-{{
-  "gist": "one-line summary of what this block is about",
-  "block_type": "reflection|task|decision|question|observation|vent|plan|log_entry",
-  "life_areas": ["work", "health", "relationships", "finance", "learning", "creative", "meta"],
-  "emotional_valence": -1.0 to 1.0,
-  "intensity": 0.0 to 1.0,
-  "urgency": "today" | "this_week" | "someday" | null,
-  "importance": "high" | "medium" | "low" | null,
-  "completion_status": "open" | "done" | "blocked" | "abandoned" | null,
-  "causal_links": ["cause -> effect"],
-  "concepts": ["concept-slug"]
-}}
-
-Rules:
-- gist: one sentence, neutral tone, captures the core meaning.
-- block_type: classify the primary purpose of this block.
-- life_areas: which domains does this touch? Include ALL that apply. Leave empty if unclear.
-- emotional_valence: -1.0 = very negative, 0.0 = neutral, 1.0 = very positive.
-- intensity: 0.0 = passing mention, 1.0 = this is a central concern right now.
-- urgency/importance: use JSON `null` (unquoted) if not applicable — e.g. a reflection has no urgency. NEVER output the string "null".
-- completion_status: only for tasks/plans. Use JSON `null` (unquoted) for reflections/observations.
-- causal_links: extract "X -> Y" relationships if the text states or implies causality.
-- concepts: lowercase slugs with hyphens (e.g. "machine-learning").
-"""
-
-        model = self._tagger_model()
-        t0 = time.monotonic()
-        response = model.create_chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a personal note analyst. Output ONLY valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=1024,
-            response_format={"type": "json_object"},
-        )
-        INFERENCE_SECONDS.labels(model_role="tagger", task="annotate").observe(
-            time.monotonic() - t0
-        )
-        usage = response.get("usage", {})
-        if usage:
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(
-                usage.get("prompt_tokens", 0)
-            )
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(
-                usage.get("completion_tokens", 0)
-            )
-
-        raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(
-            self.config, prompt, raw, self.config.models.tagger_model, "annotate"
-        )
-
-        try:
-            return _normalize_annotation_raw(json.loads(raw))
-        except json.JSONDecodeError:
-            INFERENCE_JSON_FAILURES.labels(task="annotate").inc()
-            logger.warning("Failed to parse annotation JSON, returning defaults")
-            return {
-                "gist": "",
-                "block_type": "observation",
-                "life_areas": [],
-                "emotional_valence": 0.0,
-                "intensity": 0.5,
-                "urgency": None,
-                "importance": None,
-                "completion_status": None,
-                "causal_links": [],
-                "concepts": [],
-            }
-
-    def tag_block(self, block_text: str) -> dict:
-        """Quick tagging pass using the smaller/faster model.
-
-        Returns: {"concepts": [...], "entities": [...], "is_task": bool}
-        """
-        prompt = f"""Tag this text block with concepts and entities.
-
-TEXT: {block_text}
-
-Return ONLY valid JSON:
-{{"concepts": ["slug-1"], "entities": ["Name"], "is_task": false}}
-"""
-        model = self._tagger_model()
-        t0 = time.monotonic()
-        response = model.create_chat_completion(
-            messages=[
-                {"role": "system", "content": "Output ONLY valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=512,
-            response_format={"type": "json_object"},
-        )
-        INFERENCE_SECONDS.labels(model_role="tagger", task="tag").observe(
-            time.monotonic() - t0
-        )
-        usage = response.get("usage", {})
-        if usage:
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="prompt").inc(
-                usage.get("prompt_tokens", 0)
-            )
-            INFERENCE_TOKENS.labels(model_role="tagger", direction="completion").inc(
-                usage.get("completion_tokens", 0)
-            )
-
-        raw = response["choices"][0]["message"]["content"]
-        _log_ft_pair(self.config, prompt, raw, self.config.models.tagger_model, "tag")
-
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            INFERENCE_JSON_FAILURES.labels(task="tag").inc()
-            return {"concepts": [], "entities": [], "is_task": False}
 
     def embed(self, text: str) -> np.ndarray:
         """Generate an embedding vector for text."""
@@ -331,7 +152,6 @@ Return ONLY valid JSON:
         INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(
             time.monotonic() - t0
         )
-        # llama-cpp-python returns list or list-of-lists
         if isinstance(result[0], list):
             vec = np.array(result[0], dtype=np.float32)
         else:
@@ -357,7 +177,8 @@ Return ONLY valid JSON:
     def extract_text_from_image(self, image_path: str) -> str:
         """OCR / caption an image using the VLM.
 
-        Falls back to empty string if VLM is not available.
+        Returns an empty string on failure. Loaded on demand — the VLM
+        stays off the GPU during normal text ingest.
         """
         try:
             import base64
@@ -367,7 +188,7 @@ Return ONLY valid JSON:
 
             from llama_cpp.llama_chat_format import Llava15ChatHandler
 
-            mmproj_path = self._model_path(self.config.models.tagger_mmproj)
+            mmproj_path = self._model_path(self.config.models.vlm_mmproj)
             handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
             model = _get_model(
                 self._model_path(self.config.models.vlm_model),
@@ -418,7 +239,6 @@ Return ONLY valid JSON:
 
         full_text = "\n\n".join(text_parts)
         if len(full_text) < 50 and Path(pdf_path).stat().st_size > 10000:
-            # Likely a scanned PDF — try VLM on first page image
             logger.info("PDF appears scanned, attempting VLM OCR: %s", pdf_path)
             doc = fitz.open(pdf_path)
             if doc.page_count > 0:

@@ -5,25 +5,19 @@ from pathlib import Path
 
 from dendr.db import (
     connect,
-    get_block_annotation,
-    get_block_state,
-    get_emotional_trajectory,
-    get_life_area_distribution,
-    get_open_tasks_annotated,
+    get_block,
+    get_block_hash,
+    get_open_tasks,
     get_section_effectiveness,
-    get_significant_blocks,
     get_stats,
-    get_task_lifecycle_stats,
     init_schema,
     insert_task_event,
-    upsert_block_annotation,
-    upsert_block_state,
+    search_blocks_fts,
+    update_completion_status,
+    upsert_block,
     upsert_feedback_score,
 )
-from dendr.models import (
-    BlockAnnotation,
-    BlockType,
-)
+from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN, Block
 
 
 def _temp_db():
@@ -34,173 +28,151 @@ def _temp_db():
     return conn
 
 
-def _make_annotation(**kwargs) -> BlockAnnotation:
+def _make_block(**kwargs) -> Block:
     defaults = dict(
         block_id="dendr-test-1",
         source_file="Daily/2026-04-08.md",
-        source_date="2026-04-08",
-        original_text="Test block content",
-        gist="Test gist",
-        block_type=BlockType.OBSERVATION,
-        life_areas=["work"],
-        emotional_valence=0.0,
-        intensity=0.5,
-        concepts=["test-concept"],
-        entities=[],
+        line_start=0,
+        line_end=0,
+        text="Test block content",
+        block_hash="abc123",
+        checkbox_state=CHECKBOX_NONE,
     )
     defaults.update(kwargs)
-    return BlockAnnotation(**defaults)
+    return Block(**defaults)
 
 
 def test_stats_empty():
     conn = _temp_db()
     s = get_stats(conn)
-    assert s["annotations"] == 0
+    assert s["blocks"] == 0
     assert s["open_tasks"] == 0
 
 
-def test_block_state():
+def test_upsert_block_roundtrip():
     conn = _temp_db()
-    upsert_block_state(conn, "b1", "daily.md", "hash1", "model1", "v1")
-    state = get_block_state(conn, "b1")
-    assert state is not None
-    assert state["block_hash"] == "hash1"
+    block = _make_block()
+    upsert_block(conn, block, "2026-04-08")
 
-    upsert_block_state(conn, "b1", "daily.md", "hash2", "model1", "v1")
-    state = get_block_state(conn, "b1")
-    assert state["block_hash"] == "hash2"
-
-
-# ── Block annotation tests ───────────────────────────────────────────
-
-
-def test_upsert_block_annotation():
-    conn = _temp_db()
-    ann = _make_annotation()
-    ann_id = upsert_block_annotation(conn, ann)
-    assert ann_id > 0
-
-    retrieved = get_block_annotation(conn, "dendr-test-1")
+    retrieved = get_block(conn, "dendr-test-1")
     assert retrieved is not None
-    assert retrieved["gist"] == "Test gist"
-    assert retrieved["block_type"] == "observation"
+    assert retrieved["text"] == "Test block content"
     assert retrieved["source_date"] == "2026-04-08"
+    assert retrieved["checkbox_state"] == CHECKBOX_NONE
 
 
-def test_upsert_block_annotation_update():
+def test_upsert_block_update_changes_text_and_hash():
     conn = _temp_db()
-    ann = _make_annotation(gist="Original gist")
-    upsert_block_annotation(conn, ann)
-
-    ann.gist = "Updated gist"
-    upsert_block_annotation(conn, ann)
-
-    retrieved = get_block_annotation(conn, "dendr-test-1")
-    assert retrieved["gist"] == "Updated gist"
-
-
-def test_annotation_json_fields():
-    conn = _temp_db()
-    ann = _make_annotation(
-        life_areas=["work", "health"],
-        causal_links=["overwork -> burnout"],
-        concepts=["burnout", "project-x"],
-        entities=["Alice"],
-    )
-    upsert_block_annotation(conn, ann)
-
-    import json
-
-    retrieved = get_block_annotation(conn, "dendr-test-1")
-    assert json.loads(retrieved["life_areas"]) == ["work", "health"]
-    assert json.loads(retrieved["causal_links"]) == ["overwork -> burnout"]
-    assert json.loads(retrieved["concepts"]) == ["burnout", "project-x"]
-
-
-def test_get_significant_blocks():
-    conn = _temp_db()
-    # High intensity block
-    upsert_block_annotation(
+    upsert_block(conn, _make_block(text="first"), "2026-04-08")
+    upsert_block(
         conn,
-        _make_annotation(
-            block_id="high",
-            intensity=0.9,
-            gist="Very important",
+        _make_block(text="second", block_hash="def456"),
+        "2026-04-08",
+    )
+
+    retrieved = get_block(conn, "dendr-test-1")
+    assert retrieved["text"] == "second"
+    assert retrieved["block_hash"] == "def456"
+
+
+def test_upsert_preserves_completion_status():
+    """User-set completion_status must survive a source-file re-ingest."""
+    conn = _temp_db()
+    upsert_block(
+        conn,
+        _make_block(checkbox_state=CHECKBOX_OPEN),
+        "2026-04-08",
+    )
+    update_completion_status(conn, "dendr-test-1", "done")
+
+    # Re-ingest: same block_id, same checkbox, different hash (edited text)
+    upsert_block(
+        conn,
+        _make_block(
+            checkbox_state=CHECKBOX_OPEN,
+            text="Test block edited",
+            block_hash="xyz789",
         ),
-    )
-    # Low intensity block
-    upsert_block_annotation(
-        conn,
-        _make_annotation(
-            block_id="low",
-            intensity=0.1,
-            gist="Not important",
-        ),
+        "2026-04-08",
     )
 
-    results = get_significant_blocks(conn, "2026-04-01")
-    assert len(results) == 2
-    assert results[0]["block_id"] == "high"  # highest intensity first
+    retrieved = get_block(conn, "dendr-test-1")
+    assert retrieved["completion_status"] == "done"
+    assert retrieved["text"] == "Test block edited"
 
 
-def test_get_open_tasks_annotated():
+def test_get_block_hash():
     conn = _temp_db()
-    upsert_block_annotation(
-        conn,
-        _make_annotation(
-            block_id="task1",
-            block_type=BlockType.TASK,
-            completion_status="open",
-            importance="high",
-            gist="Fix CI",
-        ),
-    )
-    upsert_block_annotation(
-        conn,
-        _make_annotation(
-            block_id="done1",
-            block_type=BlockType.TASK,
-            completion_status="done",
-            gist="Done task",
-        ),
-    )
-    upsert_block_annotation(
-        conn,
-        _make_annotation(
-            block_id="obs1",
-            block_type=BlockType.OBSERVATION,
-            gist="Just an observation",
-        ),
-    )
-
-    tasks = get_open_tasks_annotated(conn)
-    assert len(tasks) == 1
-    assert tasks[0]["gist"] == "Fix CI"
+    assert get_block_hash(conn, "missing") is None
+    upsert_block(conn, _make_block(block_hash="h1"), "2026-04-08")
+    assert get_block_hash(conn, "dendr-test-1") == "h1"
 
 
-def test_get_life_area_distribution():
+def test_stats_counts_open_tasks_only():
     conn = _temp_db()
-    upsert_block_annotation(
+    upsert_block(
         conn,
-        _make_annotation(block_id="b1", life_areas=["work", "health"]),
+        _make_block(block_id="t1", checkbox_state=CHECKBOX_OPEN),
+        "2026-04-08",
     )
-    upsert_block_annotation(
+    upsert_block(
         conn,
-        _make_annotation(block_id="b2", life_areas=["work"]),
+        _make_block(block_id="t2", checkbox_state=CHECKBOX_CLOSED),
+        "2026-04-08",
     )
+    upsert_block(
+        conn,
+        _make_block(block_id="t3", checkbox_state=CHECKBOX_NONE),
+        "2026-04-08",
+    )
+    s = get_stats(conn)
+    assert s["blocks"] == 3
+    assert s["open_tasks"] == 1
 
-    dist = get_life_area_distribution(conn, "2026-04-01")
-    assert "work" in dist
-    assert dist["work"] > dist.get("health", 0)
 
-
-def test_get_emotional_trajectory():
+def test_get_open_tasks_excludes_user_closed():
     conn = _temp_db()
-    trajectory = get_emotional_trajectory(conn, weeks=2)
-    assert len(trajectory) == 2
-    for w in trajectory:
-        assert "avg_valence" in w
-        assert "block_count" in w
+    upsert_block(
+        conn, _make_block(block_id="t1", checkbox_state=CHECKBOX_OPEN), "2026-04-08"
+    )
+    upsert_block(
+        conn, _make_block(block_id="t2", checkbox_state=CHECKBOX_OPEN), "2026-04-08"
+    )
+    update_completion_status(conn, "t2", "abandoned")
+
+    rows = get_open_tasks(conn)
+    ids = [r["block_id"] for r in rows]
+    assert ids == ["t1"]
+
+
+def test_fts_finds_raw_text():
+    conn = _temp_db()
+    upsert_block(conn, _make_block(text="The quick brown fox jumps over"), "2026-04-08")
+    rows = search_blocks_fts(conn, "brown fox")
+    assert len(rows) == 1
+    assert rows[0]["block_id"] == "dendr-test-1"
+
+
+def test_fts_excludes_private_when_requested():
+    conn = _temp_db()
+    upsert_block(
+        conn,
+        _make_block(
+            block_id="priv",
+            text="sensitive content",
+            private=True,
+        ),
+        "2026-04-08",
+    )
+    upsert_block(
+        conn,
+        _make_block(block_id="pub", text="sensitive content"),
+        "2026-04-08",
+    )
+    rows = search_blocks_fts(conn, "sensitive", include_private=False)
+    ids = [r["block_id"] for r in rows]
+    assert "priv" not in ids
+    assert "pub" in ids
 
 
 # ── Feedback tests ────────────────────────────────────────────────────
@@ -216,35 +188,22 @@ def test_feedback_scores():
     assert scores["open-loops"] == 0.0
 
 
-# ── Task lifecycle tests ──────────────────────────────────────────────
+# ── Task events ───────────────────────────────────────────────────────
 
 
-def test_task_lifecycle_stats_empty():
+def test_task_event_with_reason():
     conn = _temp_db()
-    stats = get_task_lifecycle_stats(conn)
-    assert stats["total_created"] == 0
-    assert stats["completion_rate"] == 0.0
+    insert_task_event(conn, "t1", "created", "2026-04-01")
+    insert_task_event(conn, "t1", "closed", "2026-04-05", reason="done", source="user")
 
-
-def test_task_lifecycle_created_and_completed():
-    conn = _temp_db()
-    insert_task_event(conn, "task-1", "created", "2026-04-01")
-    insert_task_event(conn, "task-2", "created", "2026-04-02")
-    insert_task_event(conn, "task-1", "completed", "2026-04-05")
-
-    stats = get_task_lifecycle_stats(conn)
-    assert stats["total_created"] == 2
-    assert stats["total_completed"] == 1
-    assert stats["completion_rate"] == 0.5
-    assert stats["avg_days_to_completion"] == 4.0
-
-
-def test_task_lifecycle_abandoned():
-    conn = _temp_db()
-    insert_task_event(conn, "task-1", "created", "2026-04-01")
-    insert_task_event(conn, "task-1", "abandoned", "2026-04-10")
-
-    stats = get_task_lifecycle_stats(conn)
-    assert stats["total_abandoned"] == 1
-    assert stats["total_completed"] == 0
-    assert stats["completion_rate"] == 0.0
+    rows = conn.execute(
+        "SELECT event_type, reason, source FROM task_events WHERE block_id = ? "
+        "ORDER BY id",
+        ("t1",),
+    ).fetchall()
+    assert rows[0]["event_type"] == "created"
+    assert rows[0]["reason"] is None
+    assert rows[0]["source"] == "auto"
+    assert rows[1]["event_type"] == "closed"
+    assert rows[1]["reason"] == "done"
+    assert rows[1]["source"] == "user"
