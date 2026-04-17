@@ -1,15 +1,16 @@
 """Database schema and operations for Dendr's knowledge store.
 
 Tables:
-  - blocks: raw block text + minimal structural metadata (single source of truth)
-  - blocks_fts: FTS5 over raw block text
+  - blocks: raw block text + structural metadata
+  - blocks_fts: FTS5 over raw block text (kept in sync via triggers)
   - blocks_vec: sqlite-vec embeddings over raw block text
   - feedback_scores: per-section digest feedback for tuning
-  - task_events: user/auto-driven task lifecycle events (created, closed)
+  - task_events: task lifecycle events (created, closed)
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,23 +19,21 @@ import numpy as np
 
 from dendr.models import Block
 
-# sqlite-vec must be loaded per-connection (extensions are connection-scoped).
-_VEC_AVAILABLE: bool | None = None  # None = untested, True/False = cached result
+logger = logging.getLogger(__name__)
 
 
 def _load_vec(conn: sqlite3.Connection) -> None:
-    global _VEC_AVAILABLE
-    if _VEC_AVAILABLE is False:
-        return
+    """Load sqlite-vec on this connection. Silent no-op if unavailable."""
     try:
         import sqlite_vec
-
+    except ImportError:
+        return
+    try:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
-        _VEC_AVAILABLE = True
-    except Exception:
-        _VEC_AVAILABLE = False
+    except sqlite3.OperationalError as e:
+        logger.debug("sqlite-vec load failed: %s", e, exc_info=True)
 
 
 def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -104,27 +103,43 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
-    # FTS5 over raw block text.
-    try:
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts
-            USING fts5(text, content=blocks, content_rowid=id)
-            """
-        )
-    except sqlite3.OperationalError:
-        pass
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts
+        USING fts5(text, content=blocks, content_rowid=id)
+        """
+    )
 
-    # sqlite-vec for block embeddings (semantic search).
+    # External-content FTS5 requires explicit sync: plain INSERT OR REPLACE
+    # leaves stale tokens on updates. Triggers keep the index consistent.
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS blocks_fts_ai AFTER INSERT ON blocks BEGIN
+            INSERT INTO blocks_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS blocks_fts_ad AFTER DELETE ON blocks BEGIN
+            INSERT INTO blocks_fts(blocks_fts, rowid, text)
+                VALUES('delete', old.id, old.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS blocks_fts_au AFTER UPDATE ON blocks BEGIN
+            INSERT INTO blocks_fts(blocks_fts, rowid, text)
+                VALUES('delete', old.id, old.text);
+            INSERT INTO blocks_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        """
+    )
+
     try:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS blocks_vec "
             "USING vec0(embedding float[768], block_id text)"
         )
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as e:
+        logger.debug("blocks_vec creation skipped: %s", e)
 
-    # Migration: drop legacy tables from older schema versions.
+    # Drop tables from pre-v3 schemas so re-running init on an old DB is idempotent.
     for table in (
         "block_annotations",
         "annotations_fts",
@@ -147,8 +162,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
 def upsert_block(conn: sqlite3.Connection, block: Block, source_date: str) -> int:
     """Insert or update a block. Returns the row id.
 
-    Preserves `completion_status` across upserts so user-driven closures
-    survive re-ingest when the source file is unchanged.
+    `completion_status` is intentionally not touched on update so user-driven
+    closures (via the digest review flow) survive re-ingest of the source file.
+    FTS index is maintained by triggers on `blocks`.
     """
     now = datetime.now().isoformat()
     cur = conn.execute(
@@ -189,15 +205,6 @@ def upsert_block(conn: sqlite3.Connection, block: Block, source_date: str) -> in
             "SELECT id FROM blocks WHERE block_id = ?", (block.block_id,)
         ).fetchone()
         row_id = row["id"] if row else 0
-
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO blocks_fts(rowid, text) VALUES (?, ?)",
-            (row_id, block.text),
-        )
-    except sqlite3.OperationalError:
-        pass
-
     return row_id
 
 
@@ -208,18 +215,36 @@ def get_block(conn: sqlite3.Connection, block_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def get_block_hash(conn: sqlite3.Connection, block_id: str) -> str | None:
-    """Return the stored block_hash, or None if unknown."""
-    row = conn.execute(
-        "SELECT block_hash FROM blocks WHERE block_id = ?", (block_id,)
-    ).fetchone()
-    return row["block_hash"] if row else None
+def get_block_hashes(conn: sqlite3.Connection, block_ids: list[str]) -> dict[str, str]:
+    """Bulk hash lookup. Returns {block_id: block_hash} for known blocks."""
+    if not block_ids:
+        return {}
+    placeholders = ",".join("?" * len(block_ids))
+    rows = conn.execute(
+        f"SELECT block_id, block_hash FROM blocks WHERE block_id IN ({placeholders})",  # noqa: S608
+        block_ids,
+    ).fetchall()
+    return {r["block_id"]: r["block_hash"] for r in rows}
 
 
-def insert_block_embedding(
+def get_blocks(
+    conn: sqlite3.Connection, block_ids: list[str]
+) -> dict[str, sqlite3.Row]:
+    """Bulk block lookup. Returns {block_id: row} for known blocks."""
+    if not block_ids:
+        return {}
+    placeholders = ",".join("?" * len(block_ids))
+    rows = conn.execute(
+        f"SELECT * FROM blocks WHERE block_id IN ({placeholders})",  # noqa: S608
+        block_ids,
+    ).fetchall()
+    return {r["block_id"]: r for r in rows}
+
+
+def upsert_block_embedding(
     conn: sqlite3.Connection, block_id: str, embedding: np.ndarray
 ) -> None:
-    """Insert or replace a block's embedding."""
+    """Insert or replace a block's embedding vector."""
     conn.execute("DELETE FROM blocks_vec WHERE block_id = ?", (block_id,))
     conn.execute(
         "INSERT INTO blocks_vec(embedding, block_id) VALUES (?, ?)",
@@ -260,10 +285,7 @@ def upsert_feedback_score(
 def get_section_effectiveness(
     conn: sqlite3.Connection, lookback_weeks: int = 12
 ) -> dict[str, float]:
-    """Compute per-section usefulness ratio from feedback history.
-
-    Returns {section_name: ratio} where ratio is useful_count / total_rated.
-    """
+    """Per-section usefulness ratio from feedback history."""
     cutoff = (datetime.now() - timedelta(weeks=lookback_weeks)).isoformat()[:10]
     rows = conn.execute(
         """
@@ -293,12 +315,7 @@ def insert_task_event(
     reason: str | None = None,
     source: str = "auto",
 ) -> None:
-    """Record a task lifecycle event.
-
-    `event_type` is 'created' or 'closed'. For 'closed', `reason` can be
-    'done' | 'abandoned' | 'snoozed' | 'reopened'. `source` is 'auto' for
-    checkbox-driven transitions and 'user' for digest-closure edits.
-    """
+    """Record a task lifecycle event."""
     conn.execute(
         """
         INSERT INTO task_events
@@ -319,10 +336,7 @@ def insert_task_event(
 def update_completion_status(
     conn: sqlite3.Connection, block_id: str, status: str | None
 ) -> bool:
-    """Set completion_status on an existing block.
-
-    Returns True if a row was updated.
-    """
+    """Set completion_status on an existing block. Returns True if a row updated."""
     cur = conn.execute(
         """
         UPDATE blocks
@@ -381,7 +395,7 @@ def search_blocks_semantic(
     ids = [r["block_id"] for r in vec_rows]
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
-    q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # nosec B608  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
     if not include_private:
         q += " AND private = 0"
     q += " LIMIT ?"
@@ -425,8 +439,8 @@ def get_blocks_in_period(
     ).fetchall()
 
 
-def get_open_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """All open task blocks (checkbox open, not user-closed), newest first."""
+def get_open_tasks(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+    """Open task blocks (checkbox open, not user-closed), newest first."""
     return conn.execute(
         """
         SELECT * FROM blocks
@@ -434,5 +448,7 @@ def get_open_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
           AND (completion_status IS NULL OR completion_status = 'open')
           AND private = 0
         ORDER BY source_date DESC
-        """
+        LIMIT ?
+        """,
+        (limit,),
     ).fetchall()

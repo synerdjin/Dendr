@@ -28,7 +28,6 @@ class ModelConfig:
     embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
     vlm_ctx: int = 4096
     embedding_dim: int = 768
-    embedding_dim_short: int = 256  # Matryoshka truncation for ANN
 
 
 @dataclass
@@ -99,10 +98,6 @@ class Config:
         return Path.cwd() / "dendr-models.yaml"
 
     @property
-    def ft_pairs_path(self) -> Path:
-        return self.data_dir / "ft-pairs.jsonl"
-
-    @property
     def dendr_marker_path(self) -> Path:
         return self.vault_path / ".dendr"
 
@@ -146,7 +141,7 @@ class Config:
         marker = {
             "vault_id": self.vault_id,
             "hostname": socket.gethostname(),
-            "created": __import__("datetime").datetime.now().isoformat(),
+            "created": datetime.now().isoformat(),
         }
         self.dendr_marker_path.write_text(json.dumps(marker, indent=2))
 
@@ -162,7 +157,6 @@ class Config:
                 "embedding_model": self.models.embedding_model,
                 "vlm_ctx": self.models.vlm_ctx,
                 "embedding_dim": self.models.embedding_dim,
-                "embedding_dim_short": self.models.embedding_dim_short,
             },
             "search_port": self.search_port,
         }

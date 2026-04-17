@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Query, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -21,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Dendr Search", version="0.1.0")
 
-_config: Config | None = None
 _db_path: Path | None = None
 _llm: LLMClient | None = None
 _llm_lock = threading.Lock()
+
+ScoreType = Literal["fts", "semantic"]
 
 
 class BlockResult(BaseModel):
@@ -34,7 +36,7 @@ class BlockResult(BaseModel):
     text: str
     checkbox_state: str
     completion_status: str | None = None
-    score_type: str  # "fts" or "semantic"
+    score_type: ScoreType
 
 
 class SearchResponse(BaseModel):
@@ -43,7 +45,7 @@ class SearchResponse(BaseModel):
     total: int
 
 
-def _row_to_result(row: sqlite3.Row, score_type: str) -> BlockResult:
+def _row_to_result(row: sqlite3.Row, score_type: ScoreType) -> BlockResult:
     return BlockResult(
         block_id=row["block_id"],
         source_file=row["source_file"],
@@ -127,8 +129,7 @@ def stats() -> dict:
 def run_server(config: Config, *, host: str = "127.0.0.1") -> None:
     import uvicorn
 
-    global _config, _db_path, _llm
-    _config = config
+    global _db_path, _llm
     _db_path = config.db_path
 
     init_conn = db.connect(config.db_path)

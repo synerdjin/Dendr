@@ -6,7 +6,7 @@ from pathlib import Path
 from dendr.db import (
     connect,
     get_block,
-    get_block_hash,
+    get_block_hashes,
     get_open_tasks,
     get_section_effectiveness,
     get_stats,
@@ -101,11 +101,13 @@ def test_upsert_preserves_completion_status():
     assert retrieved["text"] == "Test block edited"
 
 
-def test_get_block_hash():
+def test_get_block_hashes():
     conn = _temp_db()
-    assert get_block_hash(conn, "missing") is None
-    upsert_block(conn, _make_block(block_hash="h1"), "2026-04-08")
-    assert get_block_hash(conn, "dendr-test-1") == "h1"
+    assert get_block_hashes(conn, []) == {}
+    assert get_block_hashes(conn, ["missing"]) == {}
+    upsert_block(conn, _make_block(block_id="a", block_hash="h1"), "2026-04-08")
+    upsert_block(conn, _make_block(block_id="b", block_hash="h2"), "2026-04-08")
+    assert get_block_hashes(conn, ["a", "b", "missing"]) == {"a": "h1", "b": "h2"}
 
 
 def test_stats_counts_open_tasks_only():

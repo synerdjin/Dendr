@@ -8,7 +8,6 @@ The search server exposes them on its existing FastAPI app at /metrics.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
@@ -105,21 +104,13 @@ def start_metrics_server(port: int = 9100) -> None:
 
 def collect_queue_metrics(config) -> None:
     """Read queue directories and update gauge values."""
+    from dendr import queue
+
     try:
-        pending_dir: Path = config.pending_dir
-        processing_dir: Path = config.processing_dir
-
-        pending_count = (
-            len(list(pending_dir.glob("*.json"))) if pending_dir.exists() else 0
-        )
-        processing_count = (
-            len(list(processing_dir.glob("*.json"))) if processing_dir.exists() else 0
-        )
-
-        QUEUE_PENDING.set(pending_count)
-        QUEUE_PROCESSING.set(processing_count)
-    except Exception as e:
-        logger.debug("Failed to collect queue metrics: %s", e)
+        QUEUE_PENDING.set(queue.pending_count(config))
+        QUEUE_PROCESSING.set(queue.processing_count(config))
+    except Exception:
+        logger.debug("Failed to collect queue metrics", exc_info=True)
 
 
 def collect_db_metrics(conn) -> None:
@@ -129,5 +120,5 @@ def collect_db_metrics(conn) -> None:
 
         stats = db.get_stats(conn)
         BLOCKS_TOTAL.set(stats.get("blocks", 0))
-    except Exception as e:
-        logger.debug("Failed to collect DB metrics: %s", e)
+    except Exception:
+        logger.debug("Failed to collect DB metrics", exc_info=True)

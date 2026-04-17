@@ -23,6 +23,9 @@ from dendr.models import (
 from dendr.pipeline import _track_checkbox_transition, reconcile_closures
 
 
+SOURCE_DATE = "2026-04-01"
+
+
 def _temp_db():
     f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
     f.close()
@@ -72,7 +75,9 @@ def _make_queue_item(block_id: str, checkbox: str = CHECKBOX_OPEN) -> QueueItem:
 
 def test_new_open_task_logs_created():
     conn = _temp_db()
-    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_OPEN))
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_OPEN), SOURCE_DATE, None
+    )
 
     rows = conn.execute(
         "SELECT event_type, reason FROM task_events WHERE block_id = ?", ("t1",)
@@ -83,7 +88,9 @@ def test_new_open_task_logs_created():
 
 def test_new_closed_task_logs_created_and_closed():
     conn = _temp_db()
-    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_CLOSED))
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_CLOSED), SOURCE_DATE, None
+    )
 
     rows = conn.execute(
         "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
@@ -95,8 +102,11 @@ def test_new_closed_task_logs_created_and_closed():
 
 def test_checkbox_open_to_closed_logs_closed():
     conn = _temp_db()
-    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), "2026-04-01")
-    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_CLOSED))
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), SOURCE_DATE)
+    existing = get_block(conn, "t1")
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_CLOSED), SOURCE_DATE, existing
+    )
 
     rows = conn.execute(
         "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
@@ -109,8 +119,11 @@ def test_checkbox_open_to_closed_logs_closed():
 
 def test_checkbox_unchanged_logs_nothing():
     conn = _temp_db()
-    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), "2026-04-01")
-    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_OPEN))
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), SOURCE_DATE)
+    existing = get_block(conn, "t1")
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_OPEN), SOURCE_DATE, existing
+    )
     rows = conn.execute(
         "SELECT event_type FROM task_events WHERE block_id = ?", ("t1",)
     ).fetchall()
@@ -119,7 +132,9 @@ def test_checkbox_unchanged_logs_nothing():
 
 def test_non_task_block_logs_nothing():
     conn = _temp_db()
-    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_NONE))
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_NONE), SOURCE_DATE, None
+    )
     rows = conn.execute("SELECT COUNT(*) as n FROM task_events").fetchone()
     assert rows["n"] == 0
 

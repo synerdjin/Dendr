@@ -13,9 +13,37 @@ from datetime import datetime
 from pathlib import Path
 
 from dendr.config import Config
-from dendr.models import QueueItem
+from dendr.models import CHECKBOX_NONE, QueueItem
 
 logger = logging.getLogger(__name__)
+
+
+def _load_queue_dir(dir_path: Path, *, sort: bool = False) -> list[QueueItem]:
+    """Parse every *.json queue item in a directory."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    paths = dir_path.glob("*.json")
+    if sort:
+        paths = sorted(paths)
+    items: list[QueueItem] = []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            items.append(
+                QueueItem(
+                    block_id=data["block_id"],
+                    source_file=data["source_file"],
+                    block_hash=data["block_hash"],
+                    block_text=data["block_text"],
+                    checkbox_state=data.get("checkbox_state", CHECKBOX_NONE),
+                    private=data.get("private", False),
+                    attachment_path=data.get("attachment_path"),
+                    attachment_type=data.get("attachment_type"),
+                    created_at=datetime.fromisoformat(data["created_at"]),
+                )
+            )
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning("Corrupt queue item %s: %s", path, e)
+    return items
 
 
 def enqueue(config: Config, item: QueueItem) -> Path:
@@ -58,60 +86,17 @@ def mark_done(config: Config, block_id: str) -> None:
 
 
 def get_pending(config: Config) -> list[QueueItem]:
-    """List all pending items."""
-    config.pending_dir.mkdir(parents=True, exist_ok=True)
-    items: list[QueueItem] = []
-    for path in sorted(config.pending_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            items.append(
-                QueueItem(
-                    block_id=data["block_id"],
-                    source_file=data["source_file"],
-                    block_hash=data["block_hash"],
-                    block_text=data["block_text"],
-                    checkbox_state=data.get("checkbox_state", "none"),
-                    private=data.get("private", False),
-                    attachment_path=data.get("attachment_path"),
-                    attachment_type=data.get("attachment_type"),
-                    created_at=datetime.fromisoformat(data["created_at"]),
-                )
-            )
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning("Corrupt queue item %s: %s", path, e)
-    return items
+    """List all pending items (sorted for deterministic processing order)."""
+    return _load_queue_dir(config.pending_dir, sort=True)
 
 
 def get_stale_processing(config: Config) -> list[QueueItem]:
     """Find items stuck in processing/ (from a crash). These need replay."""
-    config.processing_dir.mkdir(parents=True, exist_ok=True)
-    items: list[QueueItem] = []
-    for path in config.processing_dir.glob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            items.append(
-                QueueItem(
-                    block_id=data["block_id"],
-                    source_file=data["source_file"],
-                    block_hash=data["block_hash"],
-                    block_text=data["block_text"],
-                    checkbox_state=data.get("checkbox_state", "none"),
-                    private=data.get("private", False),
-                    attachment_path=data.get("attachment_path"),
-                    attachment_type=data.get("attachment_type"),
-                    created_at=datetime.fromisoformat(data["created_at"]),
-                )
-            )
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning("Corrupt processing item %s: %s", path, e)
-    return items
+    return _load_queue_dir(config.processing_dir)
 
 
 def recover_stale(config: Config) -> int:
-    """Move stale processing items back to pending for replay.
-
-    Returns the count of recovered items.
-    """
+    """Move stale processing items back to pending for replay."""
     stale = get_stale_processing(config)
     for item in stale:
         src = config.processing_dir / f"{item.block_id}.json"
@@ -127,6 +112,12 @@ def pending_count(config: Config) -> int:
     """Quick count of pending items."""
     config.pending_dir.mkdir(parents=True, exist_ok=True)
     return len(list(config.pending_dir.glob("*.json")))
+
+
+def processing_count(config: Config) -> int:
+    """Quick count of in-flight processing items."""
+    config.processing_dir.mkdir(parents=True, exist_ok=True)
+    return len(list(config.processing_dir.glob("*.json")))
 
 
 def cleanup_done(config: Config, keep_days: int = 30) -> int:

@@ -1,16 +1,10 @@
 """Weekly digest generator — raw-text context assembly for Claude synthesis.
 
-Claude reads raw block text directly and does classification, affect reading,
-clustering, and narrative synthesis in one pass. The local model stack is not
-involved in the digest path — it only provides embeddings and vision/OCR
-during ingest.
-
-Structure of the synthesis payload:
+The synthesis payload splits by time:
 - `this_period`     — non-private blocks written in the digest window
 - `carried_forward` — open tasks from BEFORE the window (still unresolved)
 
-Persistent user context (`Wiki/_user_context.md`) is injected into the prompt
-so the reviewer has stable background on who the user is.
+Persistent user context (`Wiki/_user_context.md`) is injected into the prompt.
 """
 
 from __future__ import annotations

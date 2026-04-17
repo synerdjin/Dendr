@@ -157,11 +157,11 @@ def ingest(data_dir: str | None) -> None:
     prompt="This will reset all block state and reprocess everything. Continue?"
 )
 def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
-    """Reset block state and reprocess all daily notes from scratch.
+    """Mark every block dirty and replay the ingest pipeline.
 
-    Clears the block_state table and the done queue so every block is
-    treated as new on the next ingest cycle. Existing annotations are
-    preserved — they will be overwritten as blocks get re-tagged.
+    Blanks `block_hash` on every row so the scan detects them as changed,
+    and clears the done/processing queue directories. User-set
+    `completion_status` values are preserved.
     """
     import shutil
 
@@ -360,9 +360,6 @@ def stats(data_dir: str | None) -> None:
     click.echo(f"Pending queue:     {pending}")
 
 
-# --- LogSeq migration ---
-
-
 # --- Model management ---
 
 
@@ -389,7 +386,7 @@ def models() -> None:
 
 @models.command("pull")
 @click.option(
-    "--role", type=str, default=None, help="Download only this role (e.g. tagger)"
+    "--role", type=str, default=None, help="Download only this role (e.g. embedding)"
 )
 @click.option("--force", is_flag=True, help="Re-download even if present")
 @click.option("--data-dir", type=click.Path(), default=None)

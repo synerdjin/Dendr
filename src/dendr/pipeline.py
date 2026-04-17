@@ -1,11 +1,4 @@
-"""Core ingestion pipeline — parse, privacy, embed, commit.
-
-Raw-text architecture:
-  1. Reconcile closures from digest.md
-  2. Parse daily notes, find dirty blocks (hash-based dedup)
-  3. Embed block text (Nomic)
-  4. Commit blocks + embeddings + checkbox-driven task events
-"""
+"""Core ingestion pipeline — parse, privacy, embed, commit."""
 
 from __future__ import annotations
 
@@ -15,6 +8,8 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
+
+import numpy as np
 
 from dendr import db, queue
 from dendr.config import Config
@@ -42,7 +37,11 @@ def _extract_source_date(source_file: str) -> str:
 
 
 def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
-    """Scan Daily/ for new or changed blocks."""
+    """Scan Daily/ for new or changed blocks.
+
+    Hashes are compared in-memory per-file using a single bulk fetch to
+    avoid one SELECT per block.
+    """
     dirty_blocks: list[Block] = []
     daily_dir = config.daily_dir
 
@@ -53,64 +52,49 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
         blocks = parse_daily_note(note_path, config.attachments_dir)
         inject_block_ids(note_path, blocks)
 
+        stored = db.get_block_hashes(conn, [b.block_id for b in blocks])
         for block in blocks:
-            stored_hash = db.get_block_hash(conn, block.block_id)
-            if stored_hash != block.block_hash:
+            if stored.get(block.block_id) != block.block_hash:
                 dirty_blocks.append(block)
 
     return dirty_blocks
 
 
 def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
-    """Add dirty blocks to the pending queue after privacy filtering."""
+    """Tag privacy and enqueue dirty blocks."""
     filter_blocks(dirty_blocks)
-    count = 0
     for block in dirty_blocks:
-        item = QueueItem(
-            block_id=block.block_id,
-            source_file=block.source_file,
-            block_hash=block.block_hash,
-            block_text=block.text,
-            checkbox_state=block.checkbox_state,
-            private=block.private,
-            attachment_path=block.attachment_path,
-            attachment_type=block.attachment_type,
+        queue.enqueue(
+            config,
+            QueueItem(
+                block_id=block.block_id,
+                source_file=block.source_file,
+                block_hash=block.block_hash,
+                block_text=block.text,
+                checkbox_state=block.checkbox_state,
+                private=block.private,
+                attachment_path=block.attachment_path,
+                attachment_type=block.attachment_type,
+            ),
         )
-        queue.enqueue(config, item)
-        count += 1
-    return count
+    return len(dirty_blocks)
 
 
-def _track_checkbox_transition(conn: sqlite3.Connection, item: QueueItem) -> None:
-    """Log task_events for checkbox-driven transitions.
-
-    Creates a `created` event when a task first appears as open, and a
-    `closed` event (reason='done') when `- [ ]` becomes `- [x]`.
-    """
+def _track_checkbox_transition(
+    conn: sqlite3.Connection,
+    item: QueueItem,
+    source_date: str,
+    existing: sqlite3.Row | None,
+) -> None:
+    """Log task_events for checkbox-driven transitions."""
     if item.checkbox_state == CHECKBOX_NONE:
         return
 
-    existing = db.get_block(conn, item.block_id)
-    source_date = _extract_source_date(item.source_file)
-
     if existing is None:
-        if item.checkbox_state == CHECKBOX_OPEN:
+        db.insert_task_event(conn, item.block_id, "created", source_date)
+        if item.checkbox_state == CHECKBOX_CLOSED:
             db.insert_task_event(
-                conn, item.block_id, "created", source_date, source="auto"
-            )
-        elif item.checkbox_state == CHECKBOX_CLOSED:
-            # Task created and closed in the same write — log both so
-            # completion stats still reflect it.
-            db.insert_task_event(
-                conn, item.block_id, "created", source_date, source="auto"
-            )
-            db.insert_task_event(
-                conn,
-                item.block_id,
-                "closed",
-                source_date,
-                reason="done",
-                source="auto",
+                conn, item.block_id, "closed", source_date, reason="done"
             )
         return
 
@@ -118,23 +102,31 @@ def _track_checkbox_transition(conn: sqlite3.Connection, item: QueueItem) -> Non
     if old_state == item.checkbox_state:
         return
 
-    if old_state == CHECKBOX_OPEN and item.checkbox_state == CHECKBOX_CLOSED:
-        db.insert_task_event(
-            conn,
-            item.block_id,
-            "closed",
-            source_date,
-            reason="done",
-            source="auto",
-        )
-    elif old_state == CHECKBOX_CLOSED and item.checkbox_state == CHECKBOX_OPEN:
-        db.insert_task_event(
-            conn,
-            item.block_id,
-            "created",
-            source_date,
-            source="auto",
-        )
+    if item.checkbox_state == CHECKBOX_CLOSED and old_state == CHECKBOX_OPEN:
+        db.insert_task_event(conn, item.block_id, "closed", source_date, reason="done")
+    elif item.checkbox_state == CHECKBOX_OPEN and old_state == CHECKBOX_CLOSED:
+        db.insert_task_event(conn, item.block_id, "created", source_date)
+
+
+def _embed_all(
+    llm: LLMClient, claimed: list[QueueItem]
+) -> dict[str, np.ndarray | None]:
+    """Embed every block. Falls back to per-item on batch failure."""
+    logger.info("Embedding %d blocks", len(claimed))
+    try:
+        vecs = llm.embed_batch([i.block_text for i in claimed])
+        return {item.block_id: vec for item, vec in zip(claimed, vecs)}
+    except Exception as e:
+        logger.warning("Batch embed failed, falling back per-item: %s", e)
+
+    out: dict[str, np.ndarray | None] = {}
+    for item in claimed:
+        try:
+            out[item.block_id] = llm.embed(item.block_text)
+        except Exception as e:
+            logger.warning("Failed to embed %s: %s", item.block_id, e)
+            out[item.block_id] = None
+    return out
 
 
 def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> int:
@@ -151,23 +143,14 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not claimed:
         return 0
 
-    # ── Embed all blocks (embedding model stays loaded) ──────────────
-    total = len(claimed)
-    logger.info("Embedding %d blocks", total)
-    embeddings: dict[str, bytes | None] = {}
-    for idx, item in enumerate(claimed, 1):
-        try:
-            logger.info("Embedding block %d/%d: %s", idx, total, item.block_id)
-            embeddings[item.block_id] = llm.embed(item.block_text)
-        except Exception as e:
-            logger.warning("Failed to embed block %s: %s", item.block_id, e)
-            embeddings[item.block_id] = None
+    embeddings = _embed_all(llm, claimed)
 
-    # ── Commit blocks + embeddings + task events ─────────────────────
-    logger.info("Committing %d blocks", total)
+    existing_rows = db.get_blocks(conn, [i.block_id for i in claimed])
+    logger.info("Committing %d blocks", len(claimed))
     processed = 0
 
     for item in claimed:
+        source_date = _extract_source_date(item.source_file)
         block = Block(
             block_id=item.block_id,
             source_file=item.source_file,
@@ -180,24 +163,18 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             attachment_path=item.attachment_path,
             attachment_type=item.attachment_type,
         )
-        source_date = _extract_source_date(item.source_file)
 
         try:
             conn.execute("BEGIN")
             try:
-                _track_checkbox_transition(conn, item)
+                _track_checkbox_transition(
+                    conn, item, source_date, existing_rows.get(item.block_id)
+                )
                 db.upsert_block(conn, block, source_date)
 
-                ann_embedding = embeddings.get(item.block_id)
-                if ann_embedding is not None:
-                    try:
-                        db.insert_block_embedding(conn, item.block_id, ann_embedding)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to store block embedding %s: %s",
-                            item.block_id,
-                            e,
-                        )
+                embedding = embeddings.get(item.block_id)
+                if embedding is not None:
+                    db.upsert_block_embedding(conn, item.block_id, embedding)
 
                 conn.execute("COMMIT")
             except Exception:
@@ -213,15 +190,12 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             continue
 
     if processed > 0:
-        config.append_activity_log(
-            f"INGEST processed {processed} blocks",
-        )
+        config.append_activity_log(f"INGEST processed {processed} blocks")
 
     return processed
 
 
-# Closure event details for each user-driven status. Maps the marker
-# status in the digest to (completion_status, event_reason) pairs.
+# Maps a digest closure status to (new completion_status, task_event reason).
 _CLOSURE_DETAILS = {
     "done": ("done", "done"),
     "abandoned": ("abandoned", "abandoned"),
@@ -233,8 +207,8 @@ _CLOSURE_DETAILS = {
 def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     """Apply closure markers from Wiki/digest.md to block rows.
 
-    Runs before the scan/ingest phase so user closures are in place
-    before any re-parse can log spurious checkbox transitions.
+    Runs before the scan phase so user closures are in place before any
+    re-parse can log spurious checkbox transitions.
     """
     digest_path = config.wiki_dir / "digest.md"
     if not digest_path.exists():
@@ -250,12 +224,13 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     if not closures:
         return 0
 
+    existing = db.get_blocks(conn, [c.block_id for c in closures])
     applied = 0
     today = datetime.now().strftime("%Y-%m-%d")
 
     for closure in closures:
-        existing = db.get_block(conn, closure.block_id)
-        if existing is None:
+        row = existing.get(closure.block_id)
+        if row is None:
             continue
 
         details = _CLOSURE_DETAILS.get(closure.status)
@@ -263,8 +238,7 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
             continue
         new_completion, event_reason = details
 
-        old_completion = existing["completion_status"]
-        if old_completion == new_completion:
+        if row["completion_status"] == new_completion:
             continue
 
         db.update_completion_status(conn, closure.block_id, new_completion)
