@@ -1,9 +1,4 @@
-"""LLM client abstraction for local inference via llama-cpp-python.
-
-Manages model lifecycle for the embedding model and the vision/OCR model.
-Text annotation has been removed — Claude handles classification, affect
-reading, and narrative synthesis directly from raw block text.
-"""
+"""Local-inference surface: embeddings (Nomic) and on-demand vision/OCR (VLM)."""
 
 from __future__ import annotations
 

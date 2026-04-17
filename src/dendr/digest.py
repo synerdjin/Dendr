@@ -1,16 +1,10 @@
 """Weekly digest generator — raw-text context assembly for Claude synthesis.
 
-Claude reads raw block text directly and does classification, affect reading,
-clustering, and narrative synthesis in one pass. The local model stack is not
-involved in the digest path — it only provides embeddings and vision/OCR
-during ingest.
-
-Structure of the synthesis payload:
+The synthesis payload splits by time:
 - `this_period`     — non-private blocks written in the digest window
 - `carried_forward` — open tasks from BEFORE the window (still unresolved)
 
-Persistent user context (`Wiki/_user_context.md`) is injected into the prompt
-so the reviewer has stable background on who the user is.
+Persistent user context (`Wiki/_user_context.md`) is injected into the prompt.
 """
 
 from __future__ import annotations
@@ -198,16 +192,11 @@ def _load_user_context(config: Config) -> str:
 
 
 def _block_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a blocks row to a dict for JSON serialization."""
-    source_date = row["source_date"]
-    return {
-        "block_id": row["block_id"],
-        "source_date": source_date,
-        "age_days": _age_days(source_date),
-        "text": row["text"],
-        "checkbox_state": row["checkbox_state"],
-        "completion_status": row["completion_status"],
-    }
+    """Serialize a blocks row for the digest payload. Adds `age_days`."""
+    out = db.block_row_to_dict(row)
+    out.pop("source_file", None)
+    out["age_days"] = _age_days(out["source_date"])
+    return out
 
 
 def _gather_digest_data(

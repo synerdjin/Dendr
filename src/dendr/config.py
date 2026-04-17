@@ -28,7 +28,6 @@ class ModelConfig:
     embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
     vlm_ctx: int = 4096
     embedding_dim: int = 768
-    embedding_dim_short: int = 256  # Matryoshka truncation for ANN
 
 
 @dataclass
@@ -78,6 +77,10 @@ class Config:
         return self.queue_dir / "done"
 
     @property
+    def dead_dir(self) -> Path:
+        return self.queue_dir / "dead"
+
+    @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -97,10 +100,6 @@ class Config:
                 return candidate
         # Default to cwd even if missing
         return Path.cwd() / "dendr-models.yaml"
-
-    @property
-    def ft_pairs_path(self) -> Path:
-        return self.data_dir / "ft-pairs.jsonl"
 
     @property
     def dendr_marker_path(self) -> Path:
@@ -134,6 +133,7 @@ class Config:
             self.pending_dir,
             self.processing_dir,
             self.done_dir,
+            self.dead_dir,
             self.logs_dir,
             self.models_dir,
         ]:
@@ -146,7 +146,7 @@ class Config:
         marker = {
             "vault_id": self.vault_id,
             "hostname": socket.gethostname(),
-            "created": __import__("datetime").datetime.now().isoformat(),
+            "created": datetime.now().isoformat(),
         }
         self.dendr_marker_path.write_text(json.dumps(marker, indent=2))
 
@@ -162,7 +162,6 @@ class Config:
                 "embedding_model": self.models.embedding_model,
                 "vlm_ctx": self.models.vlm_ctx,
                 "embedding_dim": self.models.embedding_dim,
-                "embedding_dim_short": self.models.embedding_dim_short,
             },
             "search_port": self.search_port,
         }
