@@ -77,6 +77,10 @@ class Config:
         return self.queue_dir / "done"
 
     @property
+    def dead_dir(self) -> Path:
+        return self.queue_dir / "dead"
+
+    @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -129,6 +133,7 @@ class Config:
             self.pending_dir,
             self.processing_dir,
             self.done_dir,
+            self.dead_dir,
             self.logs_dir,
             self.models_dir,
         ]:

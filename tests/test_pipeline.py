@@ -225,3 +225,24 @@ def test_reconcile_closures_missing_block():
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
     assert reconcile_closures(config, conn) == 0
+
+
+# ── Dead-letter queue ─────────────────────────────────────────────────
+
+
+def test_mark_dead_moves_item_out_of_processing():
+    """Poison items should end up in dead/, not stay in processing/ forever."""
+    from dendr import queue
+
+    config = _temp_vault()
+    config.ensure_dirs()
+    item = _make_queue_item("dendr-poison")
+    queue.enqueue(config, item)
+    assert queue.claim_for_processing(config, item.block_id)
+    queue.mark_dead(config, item.block_id)
+
+    assert not (config.processing_dir / f"{item.block_id}.json").exists()
+    assert (config.dead_dir / f"{item.block_id}.json").exists()
+
+    # recover_stale should not pull a dead item back to pending.
+    assert queue.recover_stale(config) == 0

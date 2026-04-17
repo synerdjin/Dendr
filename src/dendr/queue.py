@@ -85,6 +85,19 @@ def mark_done(config: Config, block_id: str) -> None:
         shutil.move(str(src), str(dst))
 
 
+def mark_dead(config: Config, block_id: str) -> None:
+    """Move a poison item out of processing/ into dead/ so it isn't replayed.
+
+    recover_stale would otherwise pull it back to pending forever. The item
+    stays on disk for manual inspection; users can re-enqueue by hand.
+    """
+    src = config.processing_dir / f"{block_id}.json"
+    dst = config.dead_dir / f"{block_id}.json"
+    if src.exists():
+        config.dead_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+
+
 def get_pending(config: Config) -> list[QueueItem]:
     """List all pending items (sorted for deterministic processing order)."""
     return _load_queue_dir(config.pending_dir, sort=True)

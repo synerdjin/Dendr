@@ -19,6 +19,21 @@ from dendr.models import (
     CHECKBOX_CLOSED,
     CHECKBOX_NONE,
     CHECKBOX_OPEN,
+    CLOSURE_ABANDONED,
+    CLOSURE_DONE,
+    CLOSURE_SNOOZED,
+    CLOSURE_STILL_LIVE,
+    COMPLETION_ABANDONED,
+    COMPLETION_DONE,
+    COMPLETION_OPEN,
+    COMPLETION_SNOOZED,
+    EVENT_CLOSED,
+    EVENT_CREATED,
+    REASON_ABANDONED,
+    REASON_DONE,
+    REASON_REOPENED,
+    REASON_SNOOZED,
+    SOURCE_USER,
     Block,
     QueueItem,
 )
@@ -91,10 +106,10 @@ def _track_checkbox_transition(
         return
 
     if existing is None:
-        db.insert_task_event(conn, item.block_id, "created", source_date)
+        db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
         if item.checkbox_state == CHECKBOX_CLOSED:
             db.insert_task_event(
-                conn, item.block_id, "closed", source_date, reason="done"
+                conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
             )
         return
 
@@ -103,9 +118,11 @@ def _track_checkbox_transition(
         return
 
     if item.checkbox_state == CHECKBOX_CLOSED and old_state == CHECKBOX_OPEN:
-        db.insert_task_event(conn, item.block_id, "closed", source_date, reason="done")
+        db.insert_task_event(
+            conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
+        )
     elif item.checkbox_state == CHECKBOX_OPEN and old_state == CHECKBOX_CLOSED:
-        db.insert_task_event(conn, item.block_id, "created", source_date)
+        db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
 
 
 def _embed_all(
@@ -187,6 +204,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
         except Exception as e:
             logger.error("Failed to process block %s: %s", item.block_id, e)
+            queue.mark_dead(config, item.block_id)
             continue
 
     if processed > 0:
@@ -197,10 +215,10 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
 # Maps a digest closure status to (new completion_status, task_event reason).
 _CLOSURE_DETAILS = {
-    "done": ("done", "done"),
-    "abandoned": ("abandoned", "abandoned"),
-    "snoozed": ("snoozed", "snoozed"),
-    "still-live": ("open", "reopened"),
+    CLOSURE_DONE: (COMPLETION_DONE, REASON_DONE),
+    CLOSURE_ABANDONED: (COMPLETION_ABANDONED, REASON_ABANDONED),
+    CLOSURE_SNOOZED: (COMPLETION_SNOOZED, REASON_SNOOZED),
+    CLOSURE_STILL_LIVE: (COMPLETION_OPEN, REASON_REOPENED),
 }
 
 
@@ -243,14 +261,14 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
 
         db.update_completion_status(conn, closure.block_id, new_completion)
 
-        event_type = "created" if event_reason == "reopened" else "closed"
+        event_type = EVENT_CREATED if event_reason == REASON_REOPENED else EVENT_CLOSED
         db.insert_task_event(
             conn,
             closure.block_id,
             event_type,
             today,
             reason=event_reason,
-            source="user",
+            source=SOURCE_USER,
         )
         applied += 1
 

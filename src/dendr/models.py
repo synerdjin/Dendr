@@ -11,6 +11,39 @@ CHECKBOX_OPEN = "open"
 CHECKBOX_CLOSED = "closed"
 CHECKBOX_NONE = "none"
 
+# Values stored in `blocks.completion_status` — only set when the user closes
+# a task via the digest review flow (otherwise NULL).
+COMPLETION_OPEN = "open"
+COMPLETION_DONE = "done"
+COMPLETION_ABANDONED = "abandoned"
+COMPLETION_SNOOZED = "snoozed"
+
+# Values accepted in digest closure markers (`<!-- closure:... status:X -->`).
+# Maps to a completion_status + a task_event reason at reconcile time.
+CLOSURE_OPEN = "open"
+CLOSURE_DONE = "done"
+CLOSURE_ABANDONED = "abandoned"
+CLOSURE_SNOOZED = "snoozed"
+CLOSURE_STILL_LIVE = "still-live"
+CLOSURE_STATUSES = frozenset(
+    {CLOSURE_OPEN, CLOSURE_DONE, CLOSURE_ABANDONED, CLOSURE_SNOOZED, CLOSURE_STILL_LIVE}
+)
+
+# `task_events.event_type` values.
+EVENT_CREATED = "created"
+EVENT_CLOSED = "closed"
+
+# `task_events.reason` values (only meaningful for EVENT_CLOSED and for the
+# "reopened" reason on an EVENT_CREATED row following a user reopen).
+REASON_DONE = "done"
+REASON_ABANDONED = "abandoned"
+REASON_SNOOZED = "snoozed"
+REASON_REOPENED = "reopened"
+
+# `task_events.source` — who drove the transition.
+SOURCE_AUTO = "auto"  # checkbox edit in a daily note
+SOURCE_USER = "user"  # digest closure marker edit
+
 
 @dataclass
 class Block:

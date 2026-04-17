@@ -17,7 +17,15 @@ from pathlib import Path
 
 import ulid
 
-from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN, Block
+from dendr.models import (
+    CHECKBOX_CLOSED,
+    CHECKBOX_NONE,
+    CHECKBOX_OPEN,
+    CLOSURE_DONE,
+    CLOSURE_OPEN,
+    CLOSURE_STATUSES,
+    Block,
+)
 
 # Obsidian block-ref pattern: text followed by ^identifier at end of line
 _BLOCK_REF_RE = re.compile(r"\s+\^([\w-]+)\s*$")
@@ -237,16 +245,15 @@ def get_file_hash(file_path: Path) -> str:
 # wins if present; otherwise the checkbox state is authoritative
 # (`[x]` → done, `[ ]` → open).
 
+_CLOSURE_STATUS_ALT = "|".join(sorted(CLOSURE_STATUSES))
 _CLOSURE_RE = re.compile(
     r"^\s*-\s*\[(?P<checkbox>[ xX])\]"  # checkbox
     r".*?"  # task label
     r"<!--\s*closure:(?P<block_id>[\w-]+)"  # block_id
-    r"(?:\s+status:(?P<status>open|done|abandoned|snoozed|still-live))?"
+    rf"(?:\s+status:(?P<status>{_CLOSURE_STATUS_ALT}))?"
     r"\s*-->",
     re.MULTILINE,
 )
-
-_VALID_STATUSES = {"open", "done", "abandoned", "snoozed", "still-live"}
 
 
 @dataclass
@@ -277,14 +284,14 @@ def parse_closures(digest_text: str) -> list[TaskClosure]:
         checked = match.group("checkbox").lower() == "x"
         explicit_status = match.group("status")
 
-        if explicit_status and explicit_status != "open":
+        if explicit_status and explicit_status != CLOSURE_OPEN:
             status = explicit_status
         elif checked:
-            status = "done"
+            status = CLOSURE_DONE
         else:
-            status = "open"
+            status = CLOSURE_OPEN
 
-        if status not in _VALID_STATUSES:
+        if status not in CLOSURE_STATUSES:
             continue
 
         results.append(

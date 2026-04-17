@@ -46,15 +46,7 @@ class SearchResponse(BaseModel):
 
 
 def _row_to_result(row: sqlite3.Row, score_type: ScoreType) -> BlockResult:
-    return BlockResult(
-        block_id=row["block_id"],
-        source_file=row["source_file"],
-        source_date=row["source_date"],
-        text=row["text"],
-        checkbox_state=row["checkbox_state"],
-        completion_status=row["completion_status"],
-        score_type=score_type,
-    )
+    return BlockResult(**db.block_row_to_dict(row), score_type=score_type)
 
 
 def _get_conn() -> sqlite3.Connection:

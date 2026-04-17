@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import Block
+from dendr.models import CHECKBOX_OPEN, COMPLETION_OPEN, Block
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,22 @@ def get_block(conn: sqlite3.Connection, block_id: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM blocks WHERE block_id = ?", (block_id,)
     ).fetchone()
+
+
+def block_row_to_dict(row: sqlite3.Row) -> dict:
+    """Serialize a blocks row to a plain dict.
+
+    Callers (digest, search) layer extra fields on top; keep this the single
+    point that knows the blocks column shape.
+    """
+    return {
+        "block_id": row["block_id"],
+        "source_file": row["source_file"],
+        "source_date": row["source_date"],
+        "text": row["text"],
+        "checkbox_state": row["checkbox_state"],
+        "completion_status": row["completion_status"],
+    }
 
 
 def get_block_hashes(conn: sqlite3.Connection, block_ids: list[str]) -> dict[str, str]:
@@ -411,9 +427,10 @@ def get_stats(conn: sqlite3.Connection) -> dict:
     open_tasks = conn.execute(
         """
         SELECT COUNT(*) as n FROM blocks
-        WHERE checkbox_state = 'open'
-          AND (completion_status IS NULL OR completion_status = 'open')
-        """
+        WHERE checkbox_state = ?
+          AND (completion_status IS NULL OR completion_status = ?)
+        """,
+        (CHECKBOX_OPEN, COMPLETION_OPEN),
     ).fetchone()["n"]
     return {
         "blocks": blocks_count,
@@ -444,11 +461,11 @@ def get_open_tasks(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.R
     return conn.execute(
         """
         SELECT * FROM blocks
-        WHERE checkbox_state = 'open'
-          AND (completion_status IS NULL OR completion_status = 'open')
+        WHERE checkbox_state = ?
+          AND (completion_status IS NULL OR completion_status = ?)
           AND private = 0
         ORDER BY source_date DESC
         LIMIT ?
         """,
-        (limit,),
+        (CHECKBOX_OPEN, COMPLETION_OPEN, limit),
     ).fetchall()

@@ -177,6 +177,21 @@ def test_fts_excludes_private_when_requested():
     assert "pub" in ids
 
 
+def test_fts_no_stale_tokens_on_update():
+    """Regression: external-content FTS5 must not retain old tokens after update."""
+    conn = _temp_db()
+    upsert_block(conn, _make_block(text="zebra elephant mongoose"), "2026-04-08")
+    assert len(search_blocks_fts(conn, "zebra")) == 1
+
+    upsert_block(
+        conn,
+        _make_block(text="turtle panda", block_hash="h2"),
+        "2026-04-08",
+    )
+    assert search_blocks_fts(conn, "zebra") == []
+    assert len(search_blocks_fts(conn, "panda")) == 1
+
+
 # ── Feedback tests ────────────────────────────────────────────────────
 
 
