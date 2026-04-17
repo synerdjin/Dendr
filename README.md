@@ -1,8 +1,8 @@
 # Dendr
 
-A personal knowledge compiler that watches Obsidian Daily Notes, annotates blocks with rich metadata via local LLMs, and stores them in SQLite with FTS and vector search. Weekly digests surface actionable advice with task lifecycle tracking, closure review, and pattern detection.
+A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
 
-**Local LLM handles all mechanical work** — block annotation, tagging, embeddings, vision/OCR. **Claude (via Claude Code)** is reserved for weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
+**Local models do only what Claude can't or shouldn't**: embeddings for semantic search, and vision/OCR for image and scanned-PDF attachments. **Claude (via Claude Code)** handles weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
 
 ## How it works
 
@@ -10,16 +10,16 @@ A personal knowledge compiler that watches Obsidian Daily Notes, annotates block
 Daily Notes (you write here)
     ↓ watcher detects changes
     ↓ block-level parsing + privacy filter
-    ↓ Phase 1: local LLM annotates blocks (gist, type, emotional signals, urgency, concepts)
-    ↓ Phase 2: embed annotation text for semantic search
-    ↓ Phase 3: commit to SQLite (annotations + FTS + vector index + task events)
+    ↓ embed raw block text (Nomic)
+    ↓ commit to SQLite (blocks + FTS + vector index)
+    ↓ log task_events on checkbox transitions
 Wiki/digest.md (you read here, on any device)
 ```
 
 ## Requirements
 
 - Python 3.11+
-- GPU with 12GB+ VRAM (tested on RTX 4070)
+- GPU with 6GB+ VRAM (for embeddings; more if you use vision/OCR)
 - Local model weights (see [Model Setup](#model-setup))
 - Obsidian vault synced via iCloud (or any sync)
 
@@ -63,8 +63,8 @@ dendr serve
 | `dendr init <vault>` | Initialize vault structure + database + Claude prompts |
 | `dendr daemon` | Watch `Daily/` and auto-ingest on changes |
 | `dendr ingest` | Run a single ingest cycle |
-| `dendr reprocess` | Reset block state and reprocess everything from scratch |
-| `dendr search <query>` | Search annotations (FTS, semantic, or hybrid) |
+| `dendr reprocess` | Mark all blocks dirty and re-embed from scratch |
+| `dendr search <query>` | Search blocks (FTS, semantic, or hybrid) |
 | `dendr serve` | Start search server on `localhost:7777` |
 | `dendr stats` | Show knowledge base statistics |
 | `dendr digest` | Generate weekly digest briefing |
@@ -86,7 +86,7 @@ dendr models lock    # pin hashes for reproducibility
 
 | Role | Model | Size | Purpose |
 |------|-------|------|---------|
-| Tagger + Vision | [Gemma 4 E4B Q4_K_M](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF) | ~5 GB | Block annotation, concept tagging, vision/OCR |
+| Vision | [Gemma 4 E4B Q4_K_M](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF) | ~5 GB | On-demand vision/OCR for image and scanned-PDF attachments |
 | Vision projector | mmproj-BF16 (same repo) | ~1 GB | Bridges vision encoder for image input |
 | Embeddings | [nomic-embed-text-v1.5 FP16](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
@@ -114,34 +114,32 @@ Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-nat
 Vault/                          (iCloud-synced)
   Daily/YYYY-MM-DD.md           your raw notes (never modified by Dendr)
   Wiki/
-    schema.md                   annotation spec
+    schema.md                   block schema (raw text + minimal metadata)
     log.md                      append-only activity log
     digest.md                   weekly digest (with closure markers)
     _digest_prompt.md           Claude synthesis input
     _user_context.md            stable user background for Claude
 
 %LOCALAPPDATA%\Dendr\           (PC-only, never synced)
-  state.sqlite                  annotations + FTS5 + vector search
+  state.sqlite                  blocks + FTS5 + vector search
   queue/                        two-phase commit processing queue
   models/                       GGUF model weights
-  ft-pairs.jsonl                fine-tuning corpus (logged automatically)
 ```
 
-### Block annotation
+### Block storage
 
-Every block from a daily note is annotated with structured metadata:
-- `gist` — one-line summary
-- `block_type` — reflection, task, decision, question, observation, vent, plan, log_entry
-- `life_areas` — work, health, relationships, finance, learning, creative, meta
-- `emotional_valence` / `intensity` — emotional signals (-1.0 to +1.0, 0.0 to 1.0)
-- `urgency` / `importance` — frozen at source date, not today
-- `completion_status` — open, done, blocked, abandoned (tracked across re-annotations)
-- `concepts` — topic tags for recurring theme detection
-- `causal_links` — extracted cause-effect relationships
+Each block is stored with:
+- `text` — the raw Markdown, as written
+- `source_date` — date from the daily note filename
+- `checkbox_state` — `open` (`- [ ]`), `closed` (`- [x]`), or `none`
+- `completion_status` — only set when the user closes a task via the digest review flow
+- `private` — true if the privacy filter flagged the block
+
+Claude reads raw text directly during digest synthesis; there is no pre-computed annotation layer.
 
 ### Task lifecycle
 
-Task/plan blocks have `completion_status` tracked across annotations. Status transitions are logged as `task_events`. The sticky-closure rule prevents re-annotation from clobbering user-driven closures: if you mark a task done via the digest, a re-ingest won't reopen it.
+Tasks are identified by Markdown checkboxes. Checkbox transitions (open → closed) are logged as `task_events` with source='auto'. When you close a task through the digest review flow, `completion_status` is set and the event is logged with source='user'. User closures take precedence — re-parsing the source file doesn't clobber them.
 
 ### Privacy
 
@@ -177,13 +175,8 @@ DENDR_LOG_JSON=1 dendr daemon
 `dendr init` generates three Claude Code session prompts in `.claude/`:
 
 - **digest.md** — weekly synthesis (read `_digest_prompt.md`, write `digest.md`)
-- **qa.md** — on-demand Q&A grounded in your annotations
-- **schema-review.md** — monthly annotation schema evolution review
-
-## Future
-
-- **Fine-tuning** — all LLM calls are logged as training pairs in `ft-pairs.jsonl`, ready for QLoRA
-- **Multi-vault** support via `vault_id` binding
+- **qa.md** — on-demand Q&A grounded in your blocks
+- **schema-review.md** — monthly review of the block schema
 
 ## License
 

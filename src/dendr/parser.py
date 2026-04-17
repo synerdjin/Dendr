@@ -17,10 +17,13 @@ from pathlib import Path
 
 import ulid
 
-from dendr.models import Block
+from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN, Block
 
 # Obsidian block-ref pattern: text followed by ^identifier at end of line
 _BLOCK_REF_RE = re.compile(r"\s+\^([\w-]+)\s*$")
+
+# Markdown task checkbox at the start of a block body.
+_CHECKBOX_RE = re.compile(r"^\s*\[(?P<mark>[ xX])\]\s?")
 
 # YAML frontmatter pattern
 _FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
@@ -153,6 +156,12 @@ def parse_daily_note(
         if not clean_text.strip():
             continue
 
+        checkbox_state = CHECKBOX_NONE
+        cb_match = _CHECKBOX_RE.match(clean_text)
+        if cb_match:
+            mark = cb_match.group("mark").lower()
+            checkbox_state = CHECKBOX_CLOSED if mark == "x" else CHECKBOX_OPEN
+
         block_hash = _hash_text(clean_text)
 
         is_attachment = False
@@ -176,6 +185,7 @@ def parse_daily_note(
                 line_end=end + fm_lines,
                 text=clean_text,
                 block_hash=block_hash,
+                checkbox_state=checkbox_state,
                 is_attachment_ref=is_attachment,
                 attachment_path=att_path,
                 attachment_type=att_type,

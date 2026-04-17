@@ -1,8 +1,7 @@
-"""Search server — localhost:7777 exposing FTS5 + semantic search over annotations."""
+"""Search server — localhost:7777 exposing FTS5 + semantic search over blocks."""
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import threading
@@ -28,39 +27,29 @@ _llm: LLMClient | None = None
 _llm_lock = threading.Lock()
 
 
-class AnnotationResult(BaseModel):
+class BlockResult(BaseModel):
     block_id: str
     source_file: str
     source_date: str
-    gist: str
-    block_type: str
-    life_areas: list[str]
-    concepts: list[str]
-    entities: list[str]
-    urgency: str | None = None
-    importance: str | None = None
+    text: str
+    checkbox_state: str
     completion_status: str | None = None
     score_type: str  # "fts" or "semantic"
 
 
 class SearchResponse(BaseModel):
     query: str
-    results: list[AnnotationResult]
+    results: list[BlockResult]
     total: int
 
 
-def _row_to_result(row: sqlite3.Row, score_type: str) -> AnnotationResult:
-    return AnnotationResult(
+def _row_to_result(row: sqlite3.Row, score_type: str) -> BlockResult:
+    return BlockResult(
         block_id=row["block_id"],
         source_file=row["source_file"],
         source_date=row["source_date"],
-        gist=row["gist"],
-        block_type=row["block_type"],
-        life_areas=json.loads(row["life_areas"] or "[]"),
-        concepts=json.loads(row["concepts"] or "[]"),
-        entities=json.loads(row["entities"] or "[]"),
-        urgency=row["urgency"],
-        importance=row["importance"],
+        text=row["text"],
+        checkbox_state=row["checkbox_state"],
         completion_status=row["completion_status"],
         score_type=score_type,
     )
@@ -85,18 +74,18 @@ def search(
     limit: int = Query(20, ge=1, le=100),
     include_private: bool = Query(False),
 ) -> SearchResponse:
-    """Search block annotations via full-text, semantic, or hybrid."""
+    """Search blocks via full-text, semantic, or hybrid."""
     if _llm is None:
         raise RuntimeError("Search server not initialized")
     conn = _get_conn()
     try:
         t0 = time.monotonic()
 
-        results: list[AnnotationResult] = []
+        results: list[BlockResult] = []
         seen_ids: set[str] = set()
 
         if mode in ("fts", "hybrid"):
-            fts_rows = db.search_annotations_fts(
+            fts_rows = db.search_blocks_fts(
                 conn, q, limit=limit, include_private=include_private
             )
             for row in fts_rows:
@@ -109,7 +98,7 @@ def search(
             try:
                 with _llm_lock:
                     query_emb = _llm.embed(q)
-                sem_rows = db.search_annotations_semantic(
+                sem_rows = db.search_blocks_semantic(
                     conn, query_emb, limit=limit, include_private=include_private
                 )
                 for row in sem_rows:
@@ -142,7 +131,6 @@ def run_server(config: Config, *, host: str = "127.0.0.1") -> None:
     _config = config
     _db_path = config.db_path
 
-    # Init schema once at startup, then discard the connection.
     init_conn = db.connect(config.db_path)
     db.init_schema(init_conn)
     init_conn.close()

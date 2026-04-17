@@ -23,12 +23,9 @@ def _default_data_dir() -> Path:
 class ModelConfig:
     """Local model configuration."""
 
-    tagger_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"
-    tagger_mmproj: str = "mmproj-BF16.gguf"  # vision projector for Gemma 4
-    vlm_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"  # same model, loaded with mmproj
+    vlm_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"
+    vlm_mmproj: str = "mmproj-BF16.gguf"
     embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
-    # Context sizes
-    tagger_ctx: int = 4096
     vlm_ctx: int = 4096
     embedding_dim: int = 768
     embedding_dim_short: int = 256  # Matryoshka truncation for ANN
@@ -160,11 +157,9 @@ class Config:
             "vault_path": str(self.vault_path),
             "vault_id": self.vault_id,
             "models": {
-                "tagger_model": self.models.tagger_model,
-                "tagger_mmproj": self.models.tagger_mmproj,
                 "vlm_model": self.models.vlm_model,
+                "vlm_mmproj": self.models.vlm_mmproj,
                 "embedding_model": self.models.embedding_model,
-                "tagger_ctx": self.models.tagger_ctx,
                 "vlm_ctx": self.models.vlm_ctx,
                 "embedding_dim": self.models.embedding_dim,
                 "embedding_dim_short": self.models.embedding_dim_short,

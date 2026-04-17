@@ -1,13 +1,16 @@
-"""Weekly digest generator — period-scoped context assembly for actionable advice.
+"""Weekly digest generator — raw-text context assembly for Claude synthesis.
 
-The synthesis payload is split by time:
-- `this_period`    — narrative_blocks + new_open_tasks written in the digest window
-- `carried_forward` — open_tasks + stale_tasks from BEFORE the window
-- `patterns`       — 4-week aggregates (topics, trajectory, life areas, lifecycle)
+Claude reads raw block text directly and does classification, affect reading,
+clustering, and narrative synthesis in one pass. The local model stack is not
+involved in the digest path — it only provides embeddings and vision/OCR
+during ingest.
 
-Persistent user context (`Wiki/_user_context.md`) is injected into the Claude
-synthesis prompt so the reviewer has stable background on who the user is.
-Supports a feedback loop via per-section comment blocks in the rendered digest.
+Structure of the synthesis payload:
+- `this_period`     — non-private blocks written in the digest window
+- `carried_forward` — open tasks from BEFORE the window (still unresolved)
+
+Persistent user context (`Wiki/_user_context.md`) is injected into the prompt
+so the reviewer has stable background on who the user is.
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ logger = logging.getLogger(__name__)
 SECTION_IDS = [
     "narrative",
     "task-review",
-    "patterns",
     "open-loops",
     "activity",
 ]
@@ -68,7 +70,7 @@ def _render_task_review(tasks: list[dict]) -> str:
 
     Each task gets a round-trip marker the user can edit in place:
 
-        - [ ] **gist** — *written 3w ago (work)* <!-- closure:BLOCK_ID status:open -->
+        - [ ] **first line of block text** — *written 3w ago* <!-- closure:BLOCK_ID status:open -->
 
     Users flip `[ ]` → `[x]`, or change `status:open` to `done`,
     `abandoned`, `snoozed`, or `still-live`. The next ingest reconciles.
@@ -94,18 +96,24 @@ def _render_task_review(tasks: list[dict]) -> str:
         lines.append(f"### {bucket} old")
         lines.append("")
         for t in items:
-            gist = t.get("gist") or "(no gist)"
-            areas = t.get("life_areas") or []
-            area_tag = f", {', '.join(areas)}" if areas else ""
+            label = _task_label(t.get("text", ""))
             age = _age_suffix(t.get("source_date", ""))
             block_id = t.get("block_id", "")
             lines.append(
-                f"- [ ] **{gist}** — *{age}{area_tag}* "
-                f"<!-- closure:{block_id} status:open -->"
+                f"- [ ] **{label}** — *{age}* <!-- closure:{block_id} status:open -->"
             )
         lines.append("")
 
     return "\n".join(lines).rstrip()
+
+
+def _task_label(text: str, max_len: int = 80) -> str:
+    """First meaningful line of a block, stripped of checkbox markup."""
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    first = re.sub(r"^\[[ xX]\]\s*", "", first).strip()
+    if len(first) > max_len:
+        first = first[: max_len - 1].rstrip() + "…"
+    return first or "(no text)"
 
 
 def parse_feedback(digest_text: str) -> list[SectionFeedback]:
@@ -189,29 +197,16 @@ def _load_user_context(config: Config) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _annotation_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a block_annotations row to a dict for JSON serialization.
-
-    `age_days` is computed at render time so Claude (and the local
-    renderer) can distinguish urgency-when-written from urgency-now.
-    """
+def _block_to_dict(row: sqlite3.Row) -> dict:
+    """Convert a blocks row to a dict for JSON serialization."""
     source_date = row["source_date"]
     return {
         "block_id": row["block_id"],
         "source_date": source_date,
         "age_days": _age_days(source_date),
-        "original_text": row["original_text"],
-        "gist": row["gist"],
-        "block_type": row["block_type"],
-        "life_areas": json.loads(row["life_areas"]),
-        "emotional_valence": row["emotional_valence"],
-        "intensity": row["intensity"],
-        "urgency": row["urgency"],
-        "importance": row["importance"],
+        "text": row["text"],
+        "checkbox_state": row["checkbox_state"],
         "completion_status": row["completion_status"],
-        "causal_links": json.loads(row["causal_links"]),
-        "concepts": json.loads(row["concepts"]),
-        "entities": json.loads(row["entities"]),
     }
 
 
@@ -221,34 +216,18 @@ def _gather_digest_data(
     """Assemble period-scoped digest data from the knowledge store.
 
     The payload separates `this_period` (blocks written in the digest
-    window) from `carried_forward` (still-open work from before the
-    window). Aggregated `patterns` span a fixed 4-week lookback.
+    window) from `carried_forward` (still-open work from before).
     """
     now = datetime.now()
     since = (now - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
-    since_4w = (now - timedelta(weeks=4)).strftime("%Y-%m-%d")
 
-    # Narrative blocks: get_significant_blocks is already period-scoped.
-    narrative_blocks = [
-        _annotation_to_dict(r) for r in db.get_significant_blocks(conn, since, limit=25)
+    period_blocks = [
+        _block_to_dict(r) for r in db.get_blocks_in_period(conn, since, limit=500)
     ]
 
-    # Open tasks: split into new (this period) vs carried-forward (older).
-    all_open = [_annotation_to_dict(r) for r in db.get_open_tasks_annotated(conn)]
+    all_open = [_block_to_dict(r) for r in db.get_open_tasks(conn)]
     new_open_tasks = [t for t in all_open if (t.get("source_date") or "") >= since]
     carried_open_tasks = [t for t in all_open if (t.get("source_date") or "") < since]
-
-    stale_tasks = [_annotation_to_dict(r) for r in db.get_stale_tasks(conn)]
-
-    patterns = {
-        "recurring_topics": db.get_recurring_topics(conn, since_4w),
-        "life_area_distribution": db.get_life_area_distribution(conn, since),
-        "emotional_trajectory": db.get_emotional_trajectory(conn, weeks=4),
-        "completed_recently": [
-            _annotation_to_dict(r) for r in db.get_completed_tasks(conn, since)
-        ],
-        "task_lifecycle": db.get_task_lifecycle_stats(conn),
-    }
 
     return {
         "generated_at": now.isoformat(),
@@ -257,14 +236,12 @@ def _gather_digest_data(
         "stats": db.get_stats(conn),
         "user_context": _load_user_context(config),
         "this_period": {
-            "narrative_blocks": narrative_blocks,
+            "blocks": period_blocks,
             "new_open_tasks": new_open_tasks,
         },
         "carried_forward": {
             "open_tasks": carried_open_tasks,
-            "stale_tasks": stale_tasks,
         },
-        "patterns": patterns,
         "section_effectiveness": db.get_section_effectiveness(conn),
     }
 
@@ -295,35 +272,33 @@ coach, not a therapist, not a life consultant. Direct, specific, and short.
 {context_section}
 ## How the data is shaped
 
-The payload is split by time, which matters a lot:
+Each block is raw Markdown the user wrote, plus minimal structural metadata:
 
-- `this_period.narrative_blocks` — what the user wrote THIS PAST WEEK. Read
-  these first. This is the current shape of their attention.
-- `this_period.new_open_tasks` — tasks they wrote this week that are still
-  open. Normal open-loop territory: help them decide what to prioritize.
-- `carried_forward.open_tasks` — tasks from BEFORE this period that are still
-  unresolved. These are stuck, standing concerns, or abandoned in practice.
-  Treat them differently from new tasks: the question isn't "what should I do
-  about this" — it's "is this still alive, or do I need to let it go?"
-- `carried_forward.stale_tasks` — same idea, filtered to the oldest ones.
-- `patterns` — aggregates over 4 weeks: recurring topics, emotional trajectory,
-  life area distribution, task lifecycle. Use sparingly; aggregates over small
-  samples are noise.
+- `block_id`, `source_date`, `age_days`
+- `text` — the block's raw content
+- `checkbox_state` — `open` (`- [ ]`), `closed` (`- [x]`), or `none`
+- `completion_status` — only set when the user closed a task via a digest
+  review; `null` for everything else
+
+You do the classification, affect reading, and clustering yourself — nothing
+has been pre-tagged for you. Read the raw text.
+
+The payload is split by time:
+
+- `this_period.blocks` — what the user wrote THIS PAST WEEK. Read these first.
+  This is the current shape of their attention.
+- `this_period.new_open_tasks` — open-checkbox tasks from this week.
+- `carried_forward.open_tasks` — open-checkbox tasks from BEFORE this period
+  that are still unresolved. These are stuck, standing concerns, or abandoned
+  in practice. The question isn't "what should I do about this" — it's "is
+  this still alive, or do I need to let it go?"
 
 ## Critical reading rule — urgency is historical
 
-Every block has `source_date` and `age_days`. The `urgency` (today / this_week /
-someday) and `importance` (high / medium / low) fields reflect the user's state
-**at `source_date`, not today**.
-
-- A block from 3 weeks ago tagged `urgency: today` means "the user felt it was
-  urgent 3 weeks ago". That is a SIGNAL (they cared a lot), not a CURRENT
-  deadline.
-- Anything with `age_days > 14` and `completion_status != 'done'` is either
-  stale, abandoned, or a standing concern the user never resolved. Do not
-  present it as if it's due this week.
-- Prefer "3 weeks ago you flagged X as urgent — is it still live?" over
-  "you need to do X today".
+Every block has `source_date` and `age_days`. Anything the user described as
+urgent 3 weeks ago was urgent *then*, not today. Prefer
+"3 weeks ago you flagged X as urgent — is it still live?" over
+"you need to do X today".
 
 ## Data
 
@@ -345,9 +320,9 @@ generic productivity advice.
 
 ### Sections (include only if substantive):
 
-**What's on your mind** — Synthesize `this_period.narrative_blocks` into a
-short picture of the user's current state. What are they focused on? What's
-weighing on them? Use their own language.
+**What's on your mind** — Synthesize `this_period.blocks` into a short picture
+of the user's current state. What are they focused on? What's weighing on
+them? Use their own language.
 
 **Still hanging** — For `carried_forward.open_tasks`: which of these are still
 alive, which look abandoned, which deserve a direct "is this still live?"
@@ -355,18 +330,14 @@ question. Don't list everything. Pick the 3-5 that matter most.
 
 **Reframes & next steps** — THE HIGHEST VALUE SECTION. Look for:
 - Circling patterns: same problem approached repeatedly without resolution
-- Emotional signals: high-intensity blocks reveal what actually matters
-- Causal links the user stated: use their reasoning to suggest next steps
 - Implicit priorities: what keeps coming up reveals what matters most
+- Causal reasoning stated in the text: use their own reasoning to suggest
+  next steps
 Be specific. Quote the user's words. Suggest concrete actions.
-
-**Emerging patterns** — Topics gaining frequency or shifting emotional valence.
-Note trends, don't over-interpret. Skip if sample sizes are tiny.
 
 ## Rules
 - Lead with the most important insight.
 - Be specific — quote or paraphrase the user's actual words.
-- Reference concept tags from the annotations when relevant.
 - Keep total output under 3000 words.
 - Do NOT include a preamble or sign-off.
 - Do NOT pad sections. If empty, skip entirely.
@@ -374,12 +345,12 @@ Note trends, don't over-interpret. Skip if sample sizes are tiny.
 
 
 def render_local_digest(data: dict) -> str:
-    """Render an annotation-based digest using local processing (no Claude)."""
+    """Render a minimal local digest (no Claude). Mostly the task review."""
     now_str = data["period_end"]
     period_start = data["period_start"]
     this_period = data.get("this_period", {})
     carried_forward = data.get("carried_forward", {})
-    narrative_blocks = this_period.get("narrative_blocks", [])
+    period_blocks = this_period.get("blocks", [])
     fresh_tasks = this_period.get("new_open_tasks", [])
     review_tasks = carried_forward.get("open_tasks", [])
 
@@ -393,34 +364,22 @@ def render_local_digest(data: dict) -> str:
         f"# Weekly Digest — {now_str}",
         "",
         f"**Period:** {period_start} → {now_str}  ",
-        f"**Annotations:** {data['stats']['annotations']} | "
+        f"**Blocks:** {data['stats']['blocks']} | "
         f"**Open tasks:** {data['stats']['open_tasks']}",
         "",
     ]
 
     has_content = False
 
-    # What's on your mind — top narrative blocks from this period.
-    if narrative_blocks:
+    # Recent writing — just the raw blocks from this period.
+    if period_blocks:
         has_content = True
-        top = narrative_blocks[:10]
-        lines.append(f"## What's On Your Mind ({len(top)} key blocks)")
+        lines.append(f"## This Week ({len(period_blocks)} blocks)")
         lines.append("")
-        for b in top:
-            valence_indicator = ""
-            v = b.get("emotional_valence", 0)
-            if v <= -0.3:
-                valence_indicator = " [negative]"
-            elif v >= 0.3:
-                valence_indicator = " [positive]"
-            areas = ", ".join(b.get("life_areas", []))
-            area_tag = f" ({areas})" if areas else ""
+        for b in period_blocks[:25]:
             lines.append(
-                f"- **{b['source_date']}**{area_tag}{valence_indicator}: {b['gist']}"
+                f"- **{b['source_date']}**: {_task_label(b.get('text', ''), max_len=140)}"
             )
-            if b.get("causal_links"):
-                for link in b["causal_links"]:
-                    lines.append(f"  - *Cause:* {link}")
         lines.append("")
         lines.append(_render_feedback_block("narrative"))
         lines.append("")
@@ -440,90 +399,13 @@ def render_local_digest(data: dict) -> str:
         lines.append(f"## Open Loops ({len(fresh_tasks)} fresh)")
         lines.append("")
         for t in fresh_tasks[:15]:
-            suffix = ""
-            if t.get("urgency"):
-                suffix += f" [{t['urgency']} when written]"
-            if t.get("importance"):
-                suffix += f" [{t['importance']}]"
-            lines.append(f"- {t['gist']}{suffix}")
+            lines.append(f"- {_task_label(t.get('text', ''))}")
         lines.append("")
         lines.append(_render_feedback_block("open-loops"))
         lines.append("")
 
-    # Patterns
-    topics = data["patterns"].get("recurring_topics", [])
-    topics_3plus = [t for t in topics if t["mentions"] >= 2]
-    trajectory = data["patterns"].get("emotional_trajectory", [])
-    life_areas = data["patterns"].get("life_area_distribution", {})
-
-    if topics_3plus or trajectory or life_areas:
-        has_content = True
-        lines.append("## Patterns")
-        lines.append("")
-
-        if topics_3plus:
-            lines.append("**Recurring topics:**")
-            for t in topics_3plus[:10]:
-                trend_arrow = (
-                    " ↑"
-                    if t["trend"] == "improving"
-                    else (" ↓" if t["trend"] == "worsening" else "")
-                )
-                lines.append(
-                    f"- [[{t['concept']}]] — {t['mentions']} mentions, "
-                    f"valence {t['avg_valence']:+.1f}{trend_arrow}"
-                )
-            lines.append("")
-
-        if life_areas:
-            lines.append("**Life area focus:**")
-            for area, pct in life_areas.items():
-                lines.append(f"- {area}: {pct}%")
-            lines.append("")
-
-        if trajectory:
-            lines.append("**Emotional trajectory (4 weeks):**")
-            for w in trajectory:
-                bar = "█" * max(1, int(abs(w["avg_valence"]) * 10))
-                sign = "+" if w["avg_valence"] >= 0 else ""
-                lines.append(
-                    f"- {w['week_start']}: {sign}{w['avg_valence']:.1f} {bar} "
-                    f"({w['block_count']} blocks)"
-                )
-            lines.append("")
-
-        lines.append(_render_feedback_block("patterns"))
-        lines.append("")
-
-    # Completed recently
-    completed = data["patterns"].get("completed_recently", [])
-    if completed:
-        has_content = True
-        lines.append(f"## Completed ({len(completed)})")
-        lines.append("")
-        for c in completed[:10]:
-            lines.append(f"- ~~{c['gist']}~~ ({c['source_date']})")
-        lines.append("")
-
-    # Task lifecycle stats
-    lifecycle = data["patterns"].get("task_lifecycle", {})
-    if lifecycle.get("total_created", 0) > 0:
-        lines.append("## Task Lifecycle")
-        lines.append("")
-        lines.append(
-            f"- **Created:** {lifecycle['total_created']} | "
-            f"**Completed:** {lifecycle['total_completed']} | "
-            f"**Abandoned:** {lifecycle['total_abandoned']}"
-        )
-        lines.append(f"- **Completion rate:** {lifecycle['completion_rate']:.0%}")
-        if lifecycle.get("avg_days_to_completion", 0) > 0:
-            lines.append(
-                f"- **Avg days to completion:** {lifecycle['avg_days_to_completion']}"
-            )
-        lines.append("")
-
     if not has_content:
-        lines.append("*No notable insights this week. Keep writing!*")
+        lines.append("*No notable activity this week. Keep writing!*")
         lines.append("")
 
     return "\n".join(lines)
@@ -541,7 +423,6 @@ def generate_digest(
     """
     digest_path = config.wiki_dir / "digest.md"
 
-    # Ingest feedback from previous digest
     feedback_stats = {"logged_ratings": 0}
     if digest_path.exists():
         old_content = digest_path.read_text(encoding="utf-8")
@@ -571,7 +452,7 @@ def generate_digest(
 
     this_period = data.get("this_period", {})
     carried_forward = data.get("carried_forward", {})
-    n_blocks = len(this_period.get("narrative_blocks", []))
+    n_blocks = len(this_period.get("blocks", []))
     n_new = len(this_period.get("new_open_tasks", []))
     n_carried = len(carried_forward.get("open_tasks", []))
     config.append_activity_log(

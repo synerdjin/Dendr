@@ -1,4 +1,4 @@
-"""Tests for pipeline helpers: closure reconciliation + sticky-status rule."""
+"""Tests for pipeline helpers: closure reconciliation + checkbox transitions."""
 
 from __future__ import annotations
 
@@ -6,9 +6,21 @@ import tempfile
 from pathlib import Path
 
 from dendr.config import Config
-from dendr.db import connect, init_schema, upsert_block_annotation
-from dendr.models import BlockAnnotation, BlockType
-from dendr.pipeline import _track_task_lifecycle, reconcile_closures
+from dendr.db import (
+    connect,
+    get_block,
+    init_schema,
+    update_completion_status,
+    upsert_block,
+)
+from dendr.models import (
+    CHECKBOX_CLOSED,
+    CHECKBOX_NONE,
+    CHECKBOX_OPEN,
+    Block,
+    QueueItem,
+)
+from dendr.pipeline import _track_checkbox_transition, reconcile_closures
 
 
 def _temp_db():
@@ -33,69 +45,83 @@ def _temp_vault(digest_text: str | None = None) -> Config:
     return Config(vault_path=tmp, data_dir=data_dir)
 
 
-def _make_task(block_id: str, status: str = "open") -> BlockAnnotation:
-    return BlockAnnotation(
+def _make_task_block(block_id: str, checkbox: str = CHECKBOX_OPEN) -> Block:
+    return Block(
         block_id=block_id,
         source_file="Daily/2026-04-01.md",
-        source_date="2026-04-01",
-        original_text=f"- [ ] task for {block_id}",
-        gist=f"task {block_id}",
-        block_type=BlockType.TASK,
-        life_areas=["work"],
-        completion_status=status,
+        line_start=0,
+        line_end=0,
+        text=f"[{'x' if checkbox == CHECKBOX_CLOSED else ' '}] task for {block_id}",
+        block_hash=f"h-{block_id}",
+        checkbox_state=checkbox,
     )
 
 
-# ── preserve-closed-status rule ───────────────────────────────────────
+def _make_queue_item(block_id: str, checkbox: str = CHECKBOX_OPEN) -> QueueItem:
+    return QueueItem(
+        block_id=block_id,
+        source_file="Daily/2026-04-01.md",
+        block_hash=f"h-{block_id}",
+        block_text="[ ] something",
+        checkbox_state=checkbox,
+    )
 
 
-def test_track_task_lifecycle_preserves_done_on_reopen():
-    """A user-closed task must not be reopened by a re-annotation."""
+# ── Checkbox transitions log the right task_events ────────────────────
+
+
+def test_new_open_task_logs_created():
     conn = _temp_db()
-    # Existing annotation: done
-    existing = _make_task("dendr-a", status="done")
-    upsert_block_annotation(conn, existing)
+    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_OPEN))
 
-    # Incoming annotation from the tagger says it's open again
-    incoming = _make_task("dendr-a", status="open")
-    _track_task_lifecycle(conn, incoming)
-
-    # The sticky rule must have mutated the incoming annotation
-    assert incoming.completion_status == "done"
-
-
-def test_track_task_lifecycle_preserves_abandoned():
-    conn = _temp_db()
-    upsert_block_annotation(conn, _make_task("dendr-b", status="abandoned"))
-    incoming = _make_task("dendr-b", status=None)
-    _track_task_lifecycle(conn, incoming)
-    assert incoming.completion_status == "abandoned"
-
-
-def test_track_task_lifecycle_allows_auto_done_transition():
-    """If the user genuinely wrote - [x] in their daily note, close it."""
-    conn = _temp_db()
-    upsert_block_annotation(conn, _make_task("dendr-c", status="open"))
-    incoming = _make_task("dendr-c", status="done")
-    _track_task_lifecycle(conn, incoming)
-    assert incoming.completion_status == "done"
-
-    # Event logged
-    events = conn.execute(
-        "SELECT event_type FROM task_events WHERE block_id = ?", ("dendr-c",)
+    rows = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ?", ("t1",)
     ).fetchall()
-    assert any(e["event_type"] == "completed" for e in events)
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "created"
 
 
-def test_track_task_lifecycle_logs_created_for_new_tasks():
+def test_new_closed_task_logs_created_and_closed():
     conn = _temp_db()
-    incoming = _make_task("dendr-d", status="open")
-    _track_task_lifecycle(conn, incoming)
-    events = conn.execute(
-        "SELECT event_type FROM task_events WHERE block_id = ?", ("dendr-d",)
+    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_CLOSED))
+
+    rows = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
+        ("t1",),
     ).fetchall()
-    assert len(events) == 1
-    assert events[0]["event_type"] == "created"
+    assert [r["event_type"] for r in rows] == ["created", "closed"]
+    assert rows[1]["reason"] == "done"
+
+
+def test_checkbox_open_to_closed_logs_closed():
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), "2026-04-01")
+    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_CLOSED))
+
+    rows = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
+        ("t1",),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "closed"
+    assert rows[0]["reason"] == "done"
+
+
+def test_checkbox_unchanged_logs_nothing():
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), "2026-04-01")
+    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_OPEN))
+    rows = conn.execute(
+        "SELECT event_type FROM task_events WHERE block_id = ?", ("t1",)
+    ).fetchall()
+    assert rows == []
+
+
+def test_non_task_block_logs_nothing():
+    conn = _temp_db()
+    _track_checkbox_transition(conn, _make_queue_item("t1", CHECKBOX_NONE))
+    rows = conn.execute("SELECT COUNT(*) as n FROM task_events").fetchone()
+    assert rows["n"] == 0
 
 
 # ── reconcile_closures ────────────────────────────────────────────────
@@ -110,64 +136,64 @@ def test_reconcile_closures_applies_done():
 """
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
-    upsert_block_annotation(conn, _make_task("dendr-apply-done", status="open"))
+    upsert_block(conn, _make_task_block("dendr-apply-done"), "2026-04-01")
 
     applied = reconcile_closures(config, conn)
     assert applied == 1
 
-    row = conn.execute(
-        "SELECT completion_status FROM block_annotations WHERE block_id = ?",
-        ("dendr-apply-done",),
-    ).fetchone()
+    row = get_block(conn, "dendr-apply-done")
     assert row["completion_status"] == "done"
 
     ev = conn.execute(
-        "SELECT event_type, source FROM task_events WHERE block_id = ?",
+        "SELECT event_type, reason, source FROM task_events WHERE block_id = ?",
         ("dendr-apply-done",),
     ).fetchone()
-    assert ev["event_type"] == "completed"
+    assert ev["event_type"] == "closed"
+    assert ev["reason"] == "done"
     assert ev["source"] == "user"
 
 
-def test_reconcile_closures_abandoned_via_explicit_status():
+def test_reconcile_closures_abandoned():
     digest = (
         """- [ ] **Plan** — *5w ago* <!-- closure:dendr-abandon status:abandoned -->"""
     )
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
-    upsert_block_annotation(conn, _make_task("dendr-abandon", status="open"))
+    upsert_block(conn, _make_task_block("dendr-abandon"), "2026-04-01")
 
     applied = reconcile_closures(config, conn)
     assert applied == 1
 
-    row = conn.execute(
-        "SELECT completion_status FROM block_annotations WHERE block_id = ?",
-        ("dendr-abandon",),
-    ).fetchone()
+    row = get_block(conn, "dendr-abandon")
     assert row["completion_status"] == "abandoned"
 
 
-def test_reconcile_closures_still_live_resets_to_open():
+def test_reconcile_closures_still_live_reopens():
     digest = """- [ ] **Nope, keep** — *6w ago* <!-- closure:dendr-keep status:still-live -->"""
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
-    # Task was previously closed as abandoned by mistake; user says no, keep it
-    upsert_block_annotation(conn, _make_task("dendr-keep", status="abandoned"))
+    upsert_block(conn, _make_task_block("dendr-keep"), "2026-04-01")
+    update_completion_status(conn, "dendr-keep", "abandoned")
 
     applied = reconcile_closures(config, conn)
     assert applied == 1
-    row = conn.execute(
-        "SELECT completion_status FROM block_annotations WHERE block_id = ?",
+    row = get_block(conn, "dendr-keep")
+    assert row["completion_status"] == "open"
+
+    ev = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ?",
         ("dendr-keep",),
     ).fetchone()
-    assert row["completion_status"] == "open"
+    assert ev["event_type"] == "created"
+    assert ev["reason"] == "reopened"
 
 
 def test_reconcile_closures_noop_when_already_matches():
     digest = """- [ ] **A** — *3w ago* <!-- closure:dendr-e status:open -->"""
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
-    upsert_block_annotation(conn, _make_task("dendr-e", status="open"))
+    upsert_block(conn, _make_task_block("dendr-e"), "2026-04-01")
+    update_completion_status(conn, "dendr-e", "open")
     applied = reconcile_closures(config, conn)
     assert applied == 0
 
@@ -183,5 +209,4 @@ def test_reconcile_closures_missing_block():
     digest = """- [x] **Ghost** <!-- closure:dendr-missing status:open -->"""
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
-    # No annotation inserted
     assert reconcile_closures(config, conn) == 0
