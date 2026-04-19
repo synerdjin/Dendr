@@ -198,16 +198,13 @@ def _iso_week_label(dt: datetime) -> str:
 def _archive_digest(config: Config, digest_path: Path) -> None:
     """Copy an existing digest.md to Wiki/digests/{iso_week}.md before overwriting.
 
-    The ISO week is read from the `generated:` frontmatter field. If that can't
-    be parsed, the file's mtime is used as a fallback. Silently skips if the
+    The ISO week is read from the `generated:` frontmatter field; if absent or
+    unparseable, the file's mtime is used as a fallback. Silently skips if the
     digest file is missing or empty.
     """
-    if not digest_path.exists():
-        return
     try:
         content = digest_path.read_text(encoding="utf-8")
-    except OSError as e:
-        logger.warning("Could not read existing digest for archival: %s", e)
+    except FileNotFoundError:
         return
     if not content.strip():
         return
@@ -273,7 +270,10 @@ def _block_to_dict(row: sqlite3.Row) -> dict:
 
 
 def _gather_digest_data(
-    config: Config, conn: sqlite3.Connection, weeks: int = 1
+    config: Config,
+    conn: sqlite3.Connection,
+    weeks: int = 1,
+    use_claude: bool = False,
 ) -> dict:
     """Assemble period-scoped digest data from the knowledge store.
 
@@ -304,7 +304,7 @@ def _gather_digest_data(
         "carried_forward": {
             "open_tasks": carried_open_tasks,
         },
-        "prior_digests": load_prior_digests(config),
+        "prior_digests": load_prior_digests(config) if use_claude else [],
         "section_effectiveness": db.get_section_effectiveness(conn),
     }
 
@@ -590,7 +590,7 @@ def generate_digest(
                     feedback_stats["logged_ratings"],
                 )
 
-    data = _gather_digest_data(config, conn, weeks=weeks)
+    data = _gather_digest_data(config, conn, weeks=weeks, use_claude=use_claude)
 
     if use_claude:
         prompt = build_synthesis_prompt(data)

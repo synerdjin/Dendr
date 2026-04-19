@@ -407,14 +407,15 @@ def search_blocks_semantic(
     embedding: np.ndarray,
     limit: int = 50,
     include_private: bool = True,
-    max_distance: float = 2.0,
+    min_similarity: float = 0.0,
 ) -> list[tuple[sqlite3.Row, float]]:
     """Semantic search across blocks via blocks_vec.
 
-    Returns (row, distance) tuples ordered by ascending distance.
-    Results with distance > max_distance are excluded.
-    Cosine distance range is [0, 2] where 0 = identical.
+    Returns (row, similarity) tuples ordered by descending similarity.
+    Similarity is in [0, 1] where 1 = identical (converted from sqlite-vec's
+    cosine distance). Rows below min_similarity are excluded.
     """
+    max_distance = 2.0 * (1.0 - min_similarity)
     try:
         vec_rows = conn.execute(
             """
@@ -428,18 +429,15 @@ def search_blocks_semantic(
     except sqlite3.OperationalError:
         return []
 
-    ids: list[str] = []
-    dist_by_id: dict[str, float] = {}
-    for r in vec_rows:
-        dist = r["distance"]
-        if dist <= max_distance:
-            bid = r["block_id"]
-            ids.append(bid)
-            dist_by_id[bid] = dist
-
-    if not ids:
+    sim_by_id: dict[str, float] = {
+        r["block_id"]: 1.0 - r["distance"] / 2.0
+        for r in vec_rows
+        if r["distance"] <= max_distance
+    }
+    if not sim_by_id:
         return []
 
+    ids = list(sim_by_id)
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
     q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
@@ -449,13 +447,9 @@ def search_blocks_semantic(
     params.append(limit)
     rows = conn.execute(q, params).fetchall()
 
-    # Re-sort by vector distance (IN-clause doesn't preserve order)
-    result = [
-        (row, dist_by_id[row["block_id"]])
-        for row in rows
-        if row["block_id"] in dist_by_id
-    ]
-    result.sort(key=lambda x: x[1])
+    # IN-clause doesn't preserve order, so re-sort by similarity.
+    result = [(row, sim_by_id[row["block_id"]]) for row in rows]
+    result.sort(key=lambda x: x[1], reverse=True)
     return result
 
 

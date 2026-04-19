@@ -37,7 +37,7 @@ class BlockResult(BaseModel):
     checkbox_state: str
     completion_status: str | None = None
     score_type: ScoreType
-    score: float | None = None  # 0-1 similarity (semantic only; 1 = identical)
+    score: float | None = None
 
 
 class SearchResponse(BaseModel):
@@ -46,15 +46,10 @@ class SearchResponse(BaseModel):
     total: int
 
 
-def _cosine_similarity(distance: float) -> float:
-    """Convert cosine distance [0,2] to similarity [0,1] where 1 = identical."""
-    return 1.0 - distance / 2.0
-
-
 def _row_to_result(
-    row: sqlite3.Row, score_type: ScoreType, *, distance: float | None = None
+    row: sqlite3.Row, score_type: ScoreType, *, similarity: float | None = None
 ) -> BlockResult:
-    score = round(_cosine_similarity(distance), 4) if distance is not None else None
+    score = round(similarity, 4) if similarity is not None else None
     return BlockResult(**db.block_row_to_dict(row), score_type=score_type, score=score)
 
 
@@ -107,20 +102,20 @@ def search(
             try:
                 with _llm_lock:
                     query_emb = _llm.embed(q)
-                # similarity = 1 - dist/2, so dist = 2*(1 - similarity)
-                max_distance = 2.0 * (1.0 - min_score)
                 sem_pairs = db.search_blocks_semantic(
                     conn,
                     query_emb,
                     limit=limit,
                     include_private=include_private,
-                    max_distance=max_distance,
+                    min_similarity=min_score,
                 )
-                for row, distance in sem_pairs:
+                for row, similarity in sem_pairs:
                     if row["block_id"] in seen_ids:
                         continue
                     seen_ids.add(row["block_id"])
-                    results.append(_row_to_result(row, "semantic", distance=distance))
+                    results.append(
+                        _row_to_result(row, "semantic", similarity=similarity)
+                    )
             except Exception as e:
                 logger.warning("Semantic search failed: %s", e)
 

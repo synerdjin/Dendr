@@ -246,21 +246,21 @@ def _insert_block_with_embedding(conn, block_id, text, embedding, source_date):
     conn.commit()
 
 
-def test_semantic_search_returns_distance():
-    """Semantic results include distance values."""
+def test_semantic_search_returns_similarity():
+    """Semantic results include similarity values in [0, 1]."""
     conn = _temp_db()
     emb = _normalize(np.random.default_rng(42).standard_normal(DIM).astype(np.float32))
     _insert_block_with_embedding(conn, "blk-1", "close match", emb, "2026-04-08")
 
     results = search_blocks_semantic(conn, emb, limit=10)
     assert len(results) == 1
-    row, distance = results[0]
+    row, similarity = results[0]
     assert row["block_id"] == "blk-1"
-    assert distance < 0.01  # near-identical vector should have ~0 distance
+    assert similarity > 0.99  # near-identical vector should have similarity ~1.0
 
 
-def test_semantic_search_distance_ordering():
-    """Results are ordered by ascending distance."""
+def test_semantic_search_similarity_ordering():
+    """Results are ordered by descending similarity."""
     conn = _temp_db()
     rng = np.random.default_rng(42)
     query = _normalize(rng.standard_normal(DIM).astype(np.float32))
@@ -271,14 +271,14 @@ def test_semantic_search_distance_ordering():
     mid_emb = _normalize(query + rng.standard_normal(DIM).astype(np.float32) * 0.5)
     _insert_block_with_embedding(conn, "blk-mid", "mid", mid_emb, "2026-04-08")
 
-    results = search_blocks_semantic(conn, query, limit=10, max_distance=2.0)
+    results = search_blocks_semantic(conn, query, limit=10)
     assert len(results) >= 2
     assert results[0][0]["block_id"] == "blk-close"
-    assert results[0][1] < results[1][1]
+    assert results[0][1] > results[1][1]
 
 
-def test_semantic_search_max_distance_filters():
-    """Results beyond max_distance are excluded."""
+def test_semantic_search_min_similarity_filters():
+    """Results below min_similarity are excluded."""
     conn = _temp_db()
     rng = np.random.default_rng(42)
     query = _normalize(rng.standard_normal(DIM).astype(np.float32))
@@ -289,7 +289,7 @@ def test_semantic_search_max_distance_filters():
     far_emb = -query
     _insert_block_with_embedding(conn, "blk-far", "far", far_emb, "2026-04-08")
 
-    results = search_blocks_semantic(conn, query, limit=10, max_distance=0.1)
+    results = search_blocks_semantic(conn, query, limit=10, min_similarity=0.95)
     ids = [r[0]["block_id"] for r in results]
     assert "blk-close" in ids
     assert "blk-far" not in ids
