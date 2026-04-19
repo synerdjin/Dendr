@@ -477,3 +477,24 @@ def test_load_prior_digests_returns_newest_first(tmp_path):
 
     prior = load_prior_digests(config, n=3)
     assert [p["iso_week"] for p in prior] == ["2026-W16", "2026-W15", "2026-W14"]
+
+
+def test_gather_digest_data_skips_prior_digests_without_claude(tmp_path):
+    """Lock in the lazy-load fix: _gather_digest_data with use_claude=False
+    returns an empty prior_digests list even when the archive is populated."""
+    from dendr.config import Config
+    from dendr.digest import _gather_digest_data
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.digests_archive_dir.mkdir(parents=True, exist_ok=True)
+    (config.digests_archive_dir / "2026-W15.md").write_text(
+        "old digest content", encoding="utf-8"
+    )
+
+    conn = _temp_db()
+    data_no_claude = _gather_digest_data(config, conn, use_claude=False)
+    assert data_no_claude["prior_digests"] == []
+
+    data_with_claude = _gather_digest_data(config, conn, use_claude=True)
+    assert len(data_with_claude["prior_digests"]) == 1
+    assert data_with_claude["prior_digests"][0]["iso_week"] == "2026-W15"

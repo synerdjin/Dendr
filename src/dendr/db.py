@@ -141,7 +141,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
     # Migration: recreate blocks_vec with cosine distance metric if an older
     # DB created it with the sqlite-vec default (L2). Detected by inspecting
-    # the CREATE statement for the `distance_metric` keyword.
+    # the CREATE statement for the `distance_metric` keyword. Two concurrent
+    # init_schema callers (e.g. daemon + search server on fresh upgrade) may
+    # both attempt the DROP — WAL serializes writes and the OperationalError
+    # from the loser is swallowed at debug level below.
     try:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='blocks_vec'"
@@ -443,14 +446,13 @@ def search_blocks_semantic(
     q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
     if not include_private:
         q += " AND private = 0"
-    q += " LIMIT ?"
-    params.append(limit)
     rows = conn.execute(q, params).fetchall()
 
-    # IN-clause doesn't preserve order, so re-sort by similarity.
+    # IN-clause doesn't preserve order; SQL-side LIMIT would drop closest
+    # matches by rowid order. Sort by similarity first, then truncate.
     result = [(row, sim_by_id[row["block_id"]]) for row in rows]
     result.sort(key=lambda x: x[1], reverse=True)
-    return result
+    return result[:limit]
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
