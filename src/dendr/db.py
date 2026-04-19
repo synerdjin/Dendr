@@ -159,21 +159,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError as e:
         logger.debug("blocks_vec migration skipped: %s", e)
 
-    # Drop tables from pre-v3 schemas so re-running init on an old DB is idempotent.
-    for table in (
-        "block_annotations",
-        "annotations_fts",
-        "annotations_vec",
-        "block_state",
-        "concepts",
-        "concepts_vec",
-        "claims",
-        "claims_fts",
-        "claims_vec",
-        "page_hashes",
-        "log",
-    ):
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    # Drop tables from pre-v3 schemas so re-running init on an old DB is
+    # idempotent. Kept as a static script (no f-string) to keep SAST scanners
+    # happy and avoid any appearance of dynamic SQL.
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS block_annotations;
+        DROP TABLE IF EXISTS annotations_fts;
+        DROP TABLE IF EXISTS annotations_vec;
+        DROP TABLE IF EXISTS block_state;
+        DROP TABLE IF EXISTS concepts;
+        DROP TABLE IF EXISTS concepts_vec;
+        DROP TABLE IF EXISTS claims;
+        DROP TABLE IF EXISTS claims_fts;
+        DROP TABLE IF EXISTS claims_vec;
+        DROP TABLE IF EXISTS page_hashes;
+        DROP TABLE IF EXISTS log;
+        """
+    )
 
 
 # ── Block operations ──────────────────────────────────────────────────
@@ -256,6 +259,7 @@ def get_block_hashes(conn: sqlite3.Connection, block_ids: list[str]) -> dict[str
     if not block_ids:
         return {}
     placeholders = ",".join("?" * len(block_ids))
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = conn.execute(
         f"SELECT block_id, block_hash FROM blocks WHERE block_id IN ({placeholders})",  # noqa: S608
         block_ids,
@@ -270,6 +274,7 @@ def get_blocks(
     if not block_ids:
         return {}
     placeholders = ",".join("?" * len(block_ids))
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = conn.execute(
         f"SELECT * FROM blocks WHERE block_id IN ({placeholders})",  # noqa: S608
         block_ids,
@@ -446,6 +451,7 @@ def search_blocks_semantic(
     q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
     if not include_private:
         q += " AND private = 0"
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = conn.execute(q, params).fetchall()
 
     # IN-clause doesn't preserve order; SQL-side LIMIT would drop closest
