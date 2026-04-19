@@ -64,6 +64,12 @@ Daily/*.md  →  parser (block_id, source_date, checkbox_state, hash)
 reconcile_closures (pre-ingest)
     →  scan Wiki/digest.md for `<!-- closure:<block_id> status:... -->` markers
     →  write completion_status on the block + log task_events (source='user')
+
+dendr digest --claude
+    →  archive previous Wiki/digest.md to Wiki/digests/{ISO-week}.md
+    →  load last 4 archived digests into the synthesis payload (prior_digests)
+    →  write templates/synthesis_prompt.md filled with raw blocks + prior digests
+       to Wiki/_digest_prompt.md for Claude Code to execute
 ```
 
 ### Key modules (src/dendr/)
@@ -78,9 +84,9 @@ reconcile_closures (pre-ingest)
 - **model_manager.py** — Declarative model manifest (`dendr-models.yaml`), HuggingFace download, SHA256 verification and locking
 - **pipeline.py** — Ingest pipeline: parse → privacy → queue → embed → commit. Runs `reconcile_closures` first so user digest edits are in place before re-parse. Checkbox transitions (open→closed, closed→open) are logged as `task_events`
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
-- **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over raw block text), `/stats`, and `/metrics` endpoints. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
+- **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over raw block text), `/stats`, and `/metrics` endpoints. Semantic and hybrid results carry a 0-1 `score` (cosine similarity); `min_score` filters out weak matches. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
-- **digest.py** — Weekly digest generator. Assembles a raw-text payload (this-period blocks + carried-forward open tasks + user context) and either writes a Claude synthesis prompt to `Wiki/_digest_prompt.md` or renders a minimal local digest. The `## Task Review` section carries age-bucketed closure markers
+- **digest.py** — Weekly digest generator. Assembles a raw-text payload (this-period blocks + carried-forward open tasks + user context + last 4 archived digests) and either writes a Claude synthesis prompt to `Wiki/_digest_prompt.md` or renders a minimal local digest. The prompt body lives in `templates/synthesis_prompt.md`. The `## Task Review` section carries age-bucketed closure markers. Before overwriting, the prior `digest.md` is archived to `Wiki/digests/{ISO-week}.md` for cross-week context
 
 ### Models
 
@@ -103,7 +109,8 @@ Prometheus + Grafana stack via `docker compose up prometheus grafana gpu-exporte
 - **Raw-text first**: The `blocks` table stores the block's original Markdown verbatim. All search, digest, and synthesis work reads raw text directly; Claude does classification and affect reading on the fly
 - **Checkbox-driven task lifecycle**: Tasks are identified by `- [ ]` / `- [x]` checkboxes. Checkbox transitions log `task_events` (source='auto'). User-driven closures via the digest review flow log events with source='user' and set `completion_status`
 - **Closure review loop**: Digest `## Task Review` section lists open tasks >1 week old with checkbox + `<!-- closure:<block_id> status:open -->` markers. User edits the checkbox or status value in `digest.md`; on next ingest, `reconcile_closures` parses the markers and writes `completion_status` + user-sourced task events. User closures take precedence — re-parsing the source file doesn't clobber them, because the upsert preserves `completion_status`
-- **Claude-at-synthesis**: The `--claude` digest path writes a prompt to `Wiki/_digest_prompt.md` containing raw blocks + minimal structural metadata (block_id, source_date, age_days, checkbox_state, completion_status) + user context. Claude does the classification, clustering, affect reading, and narrative synthesis at read time
+- **Claude-at-synthesis**: The `--claude` digest path writes a prompt to `Wiki/_digest_prompt.md` containing raw blocks + minimal structural metadata (block_id, source_date, age_days, checkbox_state, completion_status) + user context + the last 4 archived digests. Claude does the classification, clustering, affect reading, and narrative synthesis at read time. The prompt framing is a retrospective-coach with anti-sycophancy / safety / rumination-vs-insight rules; the full template lives in `src/dendr/templates/synthesis_prompt.md`
+- **Prior-digest archive**: Before each `--claude` run overwrites `Wiki/digest.md`, the old content is copied to `Wiki/digests/{ISO-week}.md`. The next run loads the last `PRIOR_DIGEST_COUNT` archives into the synthesis payload so Claude can do a Review step — which experiments / questions / open loops from prior weeks are still live, which quietly disappeared. Archives are re-ingested verbatim, so manual user edits to `Wiki/digests/*.md` DO influence future Claude output
 - **Feedback loop**: Digest sections include feedback comment blocks. User ratings are stored in `feedback_scores` and surfaced via `get_section_effectiveness()` so Claude can weight sections by past usefulness
 - **Two-phase queue**: Crash-safe processing via file-based pending → processing → done transitions
 - **Age-is-explicit**: Each block carries `source_date` and a computed `age_days`, and the synthesis prompt warns Claude that anything the user flagged as urgent N days ago was urgent *then*, not today

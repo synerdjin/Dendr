@@ -37,6 +37,7 @@ class BlockResult(BaseModel):
     checkbox_state: str
     completion_status: str | None = None
     score_type: ScoreType
+    score: float | None = None
 
 
 class SearchResponse(BaseModel):
@@ -45,8 +46,11 @@ class SearchResponse(BaseModel):
     total: int
 
 
-def _row_to_result(row: sqlite3.Row, score_type: ScoreType) -> BlockResult:
-    return BlockResult(**db.block_row_to_dict(row), score_type=score_type)
+def _row_to_result(
+    row: sqlite3.Row, score_type: ScoreType, *, similarity: float | None = None
+) -> BlockResult:
+    score = round(similarity, 4) if similarity is not None else None
+    return BlockResult(**db.block_row_to_dict(row), score_type=score_type, score=score)
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -67,6 +71,12 @@ def search(
     mode: str = Query("hybrid", description="fts, semantic, or hybrid"),
     limit: int = Query(20, ge=1, le=100),
     include_private: bool = Query(False),
+    min_score: float = Query(
+        0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score for semantic results (0-1)",
+    ),
 ) -> SearchResponse:
     """Search blocks via full-text, semantic, or hybrid."""
     if _llm is None:
@@ -92,14 +102,20 @@ def search(
             try:
                 with _llm_lock:
                     query_emb = _llm.embed(q)
-                sem_rows = db.search_blocks_semantic(
-                    conn, query_emb, limit=limit, include_private=include_private
+                sem_pairs = db.search_blocks_semantic(
+                    conn,
+                    query_emb,
+                    limit=limit,
+                    include_private=include_private,
+                    min_similarity=min_score,
                 )
-                for row in sem_rows:
+                for row, similarity in sem_pairs:
                     if row["block_id"] in seen_ids:
                         continue
                     seen_ids.add(row["block_id"])
-                    results.append(_row_to_result(row, "semantic"))
+                    results.append(
+                        _row_to_result(row, "semantic", similarity=similarity)
+                    )
             except Exception as e:
                 logger.warning("Semantic search failed: %s", e)
 

@@ -12,12 +12,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from dendr import db
 from dendr.config import Config
+from dendr.templates import read as read_template
+
+# Prior-digest archive: keep last N digests and feed them back to Claude so
+# the coaching prompt can review commitments across weeks.
+PRIOR_DIGEST_COUNT = 4
+PRIOR_DIGEST_CHAR_LIMIT = 4000
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +34,16 @@ SECTION_IDS = [
     "task-review",
     "open-loops",
     "activity",
+    "commitments-review",
+    "one-thing",
 ]
 
 _FEEDBACK_RE = re.compile(
     r"<!--\s*feedback:(\S+)\s*\n(.*?)-->",
     re.DOTALL,
 )
+
+_GENERATED_FIELD_RE = re.compile(r"generated:\s*(\S+)")
 
 
 @dataclass
@@ -178,6 +190,77 @@ def _age_suffix(source_date: str) -> str:
     return f"written {days // 365}y ago"
 
 
+def _iso_week_label(dt: datetime) -> str:
+    """Return an ISO week label like '2026-W15' (zero-padded, sortable)."""
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year:04d}-W{iso_week:02d}"
+
+
+def _archive_digest(config: Config, digest_path: Path) -> None:
+    """Copy an existing digest.md to Wiki/digests/{iso_week}.md before overwriting.
+
+    The ISO week is read from the `generated:` frontmatter field; if absent or
+    unparseable, the file's mtime is used as a fallback. Silently skips if the
+    digest file is missing or empty. Archives are re-ingested verbatim into
+    the next synthesis prompt via load_prior_digests, so edits a user makes
+    to Wiki/digests/*.md WILL influence future Claude output.
+    """
+    try:
+        content = digest_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except UnicodeDecodeError as e:
+        logger.warning(
+            "Digest %s is not valid UTF-8, skipping archival: %s", digest_path, e
+        )
+        return
+    if not content.strip():
+        return
+
+    dt = None
+    m = _GENERATED_FIELD_RE.search(content)
+    if m:
+        try:
+            dt = datetime.fromisoformat(m.group(1))
+        except ValueError:
+            pass
+    if dt is None:
+        dt = datetime.fromtimestamp(digest_path.stat().st_mtime)
+
+    archive_dir = config.digests_archive_dir
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"{_iso_week_label(dt)}.md"
+    if target.exists():
+        logger.warning(
+            "Overwriting existing archive %s (second digest in the same ISO week)",
+            target,
+        )
+    shutil.copy2(digest_path, target)
+    logger.info("Archived previous digest to %s", target)
+
+
+def load_prior_digests(config: Config, n: int = PRIOR_DIGEST_COUNT) -> list[dict]:
+    """Load the last `n` archived digests, newest-first.
+
+    Each entry is `{"iso_week": "YYYY-Www", "content": <markdown>}`.
+    Content truncated to PRIOR_DIGEST_CHAR_LIMIT so the full payload stays tidy.
+    """
+    archive_dir = config.digests_archive_dir
+    if not archive_dir.exists():
+        return []
+    files = sorted(archive_dir.glob("*.md"), reverse=True)[:n]
+    results: list[dict] = []
+    for p in files:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if len(text) > PRIOR_DIGEST_CHAR_LIMIT:
+            text = text[:PRIOR_DIGEST_CHAR_LIMIT] + "\n\n[...truncated]"
+        results.append({"iso_week": p.stem, "content": text})
+    return results
+
+
 def _load_user_context(config: Config) -> str:
     """Read `Wiki/_user_context.md` if present — free-form markdown.
 
@@ -200,7 +283,10 @@ def _block_to_dict(row: sqlite3.Row) -> dict:
 
 
 def _gather_digest_data(
-    config: Config, conn: sqlite3.Connection, weeks: int = 1
+    config: Config,
+    conn: sqlite3.Connection,
+    weeks: int = 1,
+    use_claude: bool = False,
 ) -> dict:
     """Assemble period-scoped digest data from the knowledge store.
 
@@ -231,12 +317,13 @@ def _gather_digest_data(
         "carried_forward": {
             "open_tasks": carried_open_tasks,
         },
+        "prior_digests": load_prior_digests(config) if use_claude else [],
         "section_effectiveness": db.get_section_effectiveness(conn),
     }
 
 
 def build_synthesis_prompt(data: dict) -> str:
-    """Build the Claude synthesis prompt for actionable advice."""
+    """Build the Claude synthesis prompt by filling templates/synthesis_prompt.md."""
     data_json = json.dumps(data, indent=2, default=str)
 
     user_context = (data.get("user_context") or "").strip()
@@ -250,87 +337,10 @@ def build_synthesis_prompt(data: dict) -> str:
             "goals, and stable constraints to give you better grounding.)*\n"
         )
 
-    return f"""You are reviewing a week of the user's daily notes. You've been doing
-this with them for a while — you know what matters to them, what they circle
-back to, what they let slide. Your goal is not to summarize their week.
-Summaries are cheap. Your goal is to notice what they might be missing in
-their own writing and name it plainly.
-
-Write like a thoughtful friend who actually read the notes — not a productivity
-coach, not a therapist, not a life consultant. Direct, specific, and short.
-{context_section}
-## How the data is shaped
-
-Each block is raw Markdown the user wrote, plus minimal structural metadata:
-
-- `block_id`, `source_date`, `age_days`
-- `text` — the block's raw content
-- `checkbox_state` — `open` (`- [ ]`), `closed` (`- [x]`), or `none`
-- `completion_status` — only set when the user closed a task via a digest
-  review; `null` for everything else
-
-You do the classification, affect reading, and clustering yourself — nothing
-has been pre-tagged for you. Read the raw text.
-
-The payload is split by time:
-
-- `this_period.blocks` — what the user wrote THIS PAST WEEK. Read these first.
-  This is the current shape of their attention.
-- `this_period.new_open_tasks` — open-checkbox tasks from this week.
-- `carried_forward.open_tasks` — open-checkbox tasks from BEFORE this period
-  that are still unresolved. These are stuck, standing concerns, or abandoned
-  in practice. The question isn't "what should I do about this" — it's "is
-  this still alive, or do I need to let it go?"
-
-## Critical reading rule — urgency is historical
-
-Every block has `source_date` and `age_days`. Anything the user described as
-urgent 3 weeks ago was urgent *then*, not today. Prefer
-"3 weeks ago you flagged X as urgent — is it still live?" over
-"you need to do X today".
-
-## Data
-
-```json
-{data_json}
-```
-
-## Section effectiveness
-
-The `section_effectiveness` scores show which sections the user has found
-useful in past digests (1.0 = always useful, 0.0 = never useful).
-Spend depth on high-scoring sections. Skip or minimize low-scoring ones.
-
-## Output format
-
-Write markdown with ONLY sections that have genuine, specific insights. Every
-piece of advice MUST reference the user's actual words or patterns — no
-generic productivity advice.
-
-### Sections (include only if substantive):
-
-**What's on your mind** — Synthesize `this_period.blocks` into a short picture
-of the user's current state. What are they focused on? What's weighing on
-them? Use their own language.
-
-**Still hanging** — For `carried_forward.open_tasks`: which of these are still
-alive, which look abandoned, which deserve a direct "is this still live?"
-question. Don't list everything. Pick the 3-5 that matter most.
-
-**Reframes & next steps** — THE HIGHEST VALUE SECTION. Look for:
-- Circling patterns: same problem approached repeatedly without resolution
-- Implicit priorities: what keeps coming up reveals what matters most
-- Causal reasoning stated in the text: use their own reasoning to suggest
-  next steps
-Be specific. Quote the user's words. Suggest concrete actions.
-
-## Rules
-- Lead with the most important insight.
-- Be specific — quote or paraphrase the user's actual words.
-- Keep total output under 3000 words.
-- Do NOT include a preamble or sign-off.
-- Do NOT pad sections. If empty, skip entirely.
-"""
+    template = read_template("synthesis_prompt.md")
+    return template.replace("{context_section}", context_section).replace(
+        "{data_json}", data_json
+    )
 
 
 def render_local_digest(data: dict) -> str:
@@ -417,7 +427,7 @@ def generate_digest(
         old_content = digest_path.read_text(encoding="utf-8")
         feedback = parse_feedback(old_content)
         if feedback:
-            date_match = re.search(r"generated:\s*(\S+)", old_content)
+            date_match = _GENERATED_FIELD_RE.search(old_content)
             digest_date = date_match.group(1)[:10] if date_match else "unknown"
             feedback_stats = ingest_feedback(conn, feedback, digest_date)
             if feedback_stats["logged_ratings"] > 0:
@@ -426,7 +436,7 @@ def generate_digest(
                     feedback_stats["logged_ratings"],
                 )
 
-    data = _gather_digest_data(config, conn, weeks=weeks)
+    data = _gather_digest_data(config, conn, weeks=weeks, use_claude=use_claude)
 
     if use_claude:
         prompt = build_synthesis_prompt(data)
@@ -437,6 +447,7 @@ def generate_digest(
     else:
         content = render_local_digest(data)
 
+    _archive_digest(config, digest_path)
     digest_path.write_text(content, encoding="utf-8")
 
     this_period = data.get("this_period", {})

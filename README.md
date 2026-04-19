@@ -116,7 +116,8 @@ Vault/                          (iCloud-synced)
   Wiki/
     schema.md                   block schema (raw text + minimal metadata)
     log.md                      append-only activity log
-    digest.md                   weekly digest (with closure markers)
+    digest.md                   current weekly digest (with closure markers)
+    digests/YYYY-Www.md         archived prior digests (re-fed to Claude)
     _digest_prompt.md           Claude synthesis input
     _user_context.md            stable user background for Claude
 

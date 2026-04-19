@@ -55,6 +55,10 @@ class Config:
     def wiki_dir(self) -> Path:
         return self.vault_path / "Wiki"
 
+    @property
+    def digests_archive_dir(self) -> Path:
+        return self.wiki_dir / "digests"
+
     # Paths derived from data_dir
     @property
     def db_path(self) -> Path:
