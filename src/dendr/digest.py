@@ -12,12 +12,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from dendr import db
 from dendr.config import Config
+
+# Prior-digest archive: keep last N digests and feed them back to Claude so
+# the coaching prompt can review commitments across weeks.
+PRIOR_DIGEST_COUNT = 4
+PRIOR_DIGEST_CHAR_LIMIT = 4000
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +33,16 @@ SECTION_IDS = [
     "task-review",
     "open-loops",
     "activity",
+    "commitments-review",
+    "one-thing",
 ]
 
 _FEEDBACK_RE = re.compile(
     r"<!--\s*feedback:(\S+)\s*\n(.*?)-->",
     re.DOTALL,
 )
+
+_GENERATED_FIELD_RE = re.compile(r"generated:\s*(\S+)")
 
 
 @dataclass
@@ -178,6 +189,68 @@ def _age_suffix(source_date: str) -> str:
     return f"written {days // 365}y ago"
 
 
+def _iso_week_label(dt: datetime) -> str:
+    """Return an ISO week label like '2026-W15' (zero-padded, sortable)."""
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year:04d}-W{iso_week:02d}"
+
+
+def _archive_digest(config: Config, digest_path: Path) -> None:
+    """Copy an existing digest.md to Wiki/digests/{iso_week}.md before overwriting.
+
+    The ISO week is read from the `generated:` frontmatter field. If that can't
+    be parsed, the file's mtime is used as a fallback. Silently skips if the
+    digest file is missing or empty.
+    """
+    if not digest_path.exists():
+        return
+    try:
+        content = digest_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("Could not read existing digest for archival: %s", e)
+        return
+    if not content.strip():
+        return
+
+    dt = None
+    m = _GENERATED_FIELD_RE.search(content)
+    if m:
+        try:
+            dt = datetime.fromisoformat(m.group(1))
+        except ValueError:
+            pass
+    if dt is None:
+        dt = datetime.fromtimestamp(digest_path.stat().st_mtime)
+
+    archive_dir = config.digests_archive_dir
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"{_iso_week_label(dt)}.md"
+    shutil.copy2(digest_path, target)
+    logger.info("Archived previous digest to %s", target)
+
+
+def load_prior_digests(config: Config, n: int = PRIOR_DIGEST_COUNT) -> list[dict]:
+    """Load the last `n` archived digests, newest-first.
+
+    Each entry is `{"iso_week": "YYYY-Www", "content": <markdown>}`.
+    Content truncated to PRIOR_DIGEST_CHAR_LIMIT so the full payload stays tidy.
+    """
+    archive_dir = config.digests_archive_dir
+    if not archive_dir.exists():
+        return []
+    files = sorted(archive_dir.glob("*.md"), reverse=True)[:n]
+    results: list[dict] = []
+    for p in files:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if len(text) > PRIOR_DIGEST_CHAR_LIMIT:
+            text = text[:PRIOR_DIGEST_CHAR_LIMIT] + "\n\n[...truncated]"
+        results.append({"iso_week": p.stem, "content": text})
+    return results
+
+
 def _load_user_context(config: Config) -> str:
     """Read `Wiki/_user_context.md` if present — free-form markdown.
 
@@ -231,6 +304,7 @@ def _gather_digest_data(
         "carried_forward": {
             "open_tasks": carried_open_tasks,
         },
+        "prior_digests": load_prior_digests(config),
         "section_effectiveness": db.get_section_effectiveness(conn),
     }
 
@@ -250,15 +324,51 @@ def build_synthesis_prompt(data: dict) -> str:
             "goals, and stable constraints to give you better grounding.)*\n"
         )
 
-    return f"""You are reviewing a week of the user's daily notes. You've been doing
-this with them for a while — you know what matters to them, what they circle
-back to, what they let slide. Your goal is not to summarize their week.
-Summaries are cheap. Your goal is to notice what they might be missing in
-their own writing and name it plainly.
-
-Write like a thoughtful friend who actually read the notes — not a productivity
-coach, not a therapist, not a life consultant. Direct, specific, and short.
+    return f"""You are a direct, analytically rigorous retrospective coach reviewing
+a week of the user's daily notes. You are a senior advisor — not a productivity
+coach, not a therapist, not a life consultant, and explicitly not a friend.
+Your job is not to summarize their week (summaries are cheap) or to make them
+feel good. Your job is to notice what they are missing in their own writing
+and name it plainly, with evidence.
 {context_section}
+## Anti-sycophancy rules (CRITICAL)
+
+- Never validate without examination. If the user's self-assessment seems
+  inflated OR deflated, say so with evidence from the blocks.
+- Every observation must cite a specific block with its date — e.g.
+  "On 2026-04-14 you wrote..." or paraphrase with the date attached. Unsourced
+  observations are noise.
+- If an observation would apply to 80% of people, dig deeper or drop it. The
+  Barnum effect is the enemy.
+- For every positive self-assessment the user made, probe for one blind spot.
+- Do not guess what the user wants to hear. There is no thumbs-up / thumbs-down
+  at the end of this conversation; optimize for truth, not approval.
+- Name contradictions when you see them — between days, between `this_period`
+  and `prior_digests`, between what they said they value and how they spent
+  their time.
+- Name rationalizations when you see them. "I was too busy to X" after
+  three weeks of the same excuse is a pattern, not a reason.
+
+## Forbidden
+
+- No inspirational quotes. No generic affirmations ("great job", "that's
+  really insightful", "you're making progress").
+- No "you should..." or "try to...". Ask questions instead.
+- No summarizing the user's writing back to them — they already know what
+  they wrote.
+- No "I understand how hard that must be" / "I'm here for you". You are a
+  tool, not a relationship.
+- No numbered lists of recommendations unless explicitly asked.
+- Never diagnose mental health conditions.
+
+## Safety
+
+If the entries contain crisis language — self-harm ideation, suicidal thought,
+persistent inability to function, severe dissociation — do not coach this
+session. Name the concern briefly, recommend professional support (988 Lifeline
+in the US, or the user's local equivalent), and stop. Do not continue with the
+normal sections.
+
 ## How the data is shaped
 
 Each block is raw Markdown the user wrote, plus minimal structural metadata:
@@ -281,6 +391,26 @@ The payload is split by time:
   that are still unresolved. These are stuck, standing concerns, or abandoned
   in practice. The question isn't "what should I do about this" — it's "is
   this still alive, or do I need to let it go?"
+- `prior_digests` — the last ~4 weekly digests, newest first. Use them for the
+  Review step: which experiments, questions, or open loops did you raise
+  previously? Which are still live in this week's entries? Which quietly
+  disappeared? Empty list on the first run.
+
+## Tools available
+
+When the weekly payload isn't enough — e.g. you want to check how often a
+theme has recurred over the past year, or pull the exact wording of a block
+the user referenced obliquely — you can query the user's knowledge base
+directly via the Dendr search API (started with `dendr serve`):
+
+- Endpoint: `http://localhost:7777/search?q=<query>&mode=hybrid&limit=10`
+- Modes: `fts` (keyword), `semantic` (embeddings), `hybrid` (both — recommended)
+- Returns raw blocks with `source_date`, `text`, `checkbox_state`,
+  `completion_status`, and a similarity `score` for semantic results.
+
+Use sparingly. Default to the payload below. Only query when a specific claim
+would be meaningfully stronger with historical evidence, and say what you
+queried and why.
 
 ## Critical reading rule — urgency is historical
 
@@ -288,6 +418,15 @@ Every block has `source_date` and `age_days`. Anything the user described as
 urgent 3 weeks ago was urgent *then*, not today. Prefer
 "3 weeks ago you flagged X as urgent — is it still live?" over
 "you need to do X today".
+
+## Rumination vs. insight
+
+- Prefer "what" questions over "why" questions. "Why" spirals into rumination;
+  "what" generates actionable insight ("What would it look like to try X?"
+  instead of "Why do you keep avoiding X?").
+- If the user has circled the same concern across 3+ weeks of `prior_digests`
+  without new causal or insight language appearing, shift from exploration to
+  one concrete small action. Reflection without new insight is rumination.
 
 ## Data
 
@@ -309,25 +448,50 @@ generic productivity advice.
 
 ### Sections (include only if substantive):
 
-**What's on your mind** — Synthesize `this_period.blocks` into a short picture
-of the user's current state. What are they focused on? What's weighing on
-them? Use their own language.
+**Last week's commitments** — ONLY if `prior_digests` is non-empty. For each
+experiment, question, or open loop you raised in the most recent prior digest,
+state its status based on `this_period.blocks` and
+`this_period.new_open_tasks`:
+followed through / partially / ignored / quietly dropped. Cite the evidence
+(or the absence of evidence). Skip this section entirely on the first run.
 
-**Still hanging** — For `carried_forward.open_tasks`: which of these are still
-alive, which look abandoned, which deserve a direct "is this still live?"
-question. Don't list everything. Pick the 3-5 that matter most.
+**What's on your mind** — Read `this_period.blocks` and group them mentally by
+four themes; you do the classification yourself from the raw text. Use the
+user's own language. After the four groups, flag any theme with zero blocks
+this week as a neglected area (the silence is signal).
 
-**Reframes & next steps** — THE HIGHEST VALUE SECTION. Look for:
-- Circling patterns: same problem approached repeatedly without resolution
-- Implicit priorities: what keeps coming up reveals what matters most
-- Causal reasoning stated in the text: use their own reasoning to suggest
-  next steps
-Be specific. Quote the user's words. Suggest concrete actions.
+- **Health** — physical, mental, sleep, substances, energy.
+- **Wealth** — work, money, career moves, building, finances.
+- **Relationships** — partner, family, friends, colleagues, community.
+- **Purpose** — learning, creative work, reflection about who they want to be.
+
+A block can appear under multiple themes if it touches multiple areas.
+
+**Still hanging** — For `carried_forward.open_tasks`: which are still alive,
+which look abandoned, which deserve a direct "is this still live?" question.
+Don't list everything. Pick the 3-5 that matter most.
+
+**Reframes & experiments** — THE HIGHEST VALUE SECTION. For each observation:
+Observation (cite dated block) → pattern (optionally cross-theme, optionally
+referencing `prior_digests`) → challenge (the blind spot or rationalization) →
+one open "what" question → one specific, small experiment for next week.
+Seth-Godin small: "spend two hours on X this week and notice Y", not "start a
+new habit".
+
+**One thing** — A single sentence: the single most important observation about
+this week, stated directly. No preamble, no hedging.
 
 ## Rules
 - Lead with the most important insight.
-- Be specific — quote or paraphrase the user's actual words.
-- Keep total output under 3000 words.
+- Be specific — quote or paraphrase the user's actual words with dates.
+- The user did not write these notes for you. They may be messy, contradictory,
+  incomplete, or emotional. That is a feature. Do not ask them to write
+  differently.
+- Before finalizing, audit your own output for bias: recency bias (weighting
+  the last 2 days too heavily), mood-congruent distortion (letting one
+  emotionally charged block color everything), confirmation bias (seeing only
+  the pattern you first noticed). Adjust if you catch yourself.
+- Keep total output under 3500 words.
 - Do NOT include a preamble or sign-off.
 - Do NOT pad sections. If empty, skip entirely.
 """
@@ -417,7 +581,7 @@ def generate_digest(
         old_content = digest_path.read_text(encoding="utf-8")
         feedback = parse_feedback(old_content)
         if feedback:
-            date_match = re.search(r"generated:\s*(\S+)", old_content)
+            date_match = _GENERATED_FIELD_RE.search(old_content)
             digest_date = date_match.group(1)[:10] if date_match else "unknown"
             feedback_stats = ingest_feedback(conn, feedback, digest_date)
             if feedback_stats["logged_ratings"] > 0:
@@ -437,6 +601,7 @@ def generate_digest(
     else:
         content = render_local_digest(data)
 
+    _archive_digest(config, digest_path)
     digest_path.write_text(content, encoding="utf-8")
 
     this_period = data.get("this_period", {})

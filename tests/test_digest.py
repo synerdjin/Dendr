@@ -112,7 +112,7 @@ def test_build_synthesis_prompt_contains_raw_text():
     }
 
     prompt = build_synthesis_prompt(data)
-    assert "reviewing a week" in prompt
+    assert "retrospective coach" in prompt
     assert "this_period.blocks" in prompt
     assert "carried_forward.open_tasks" in prompt
     assert "Reframes" in prompt
@@ -121,6 +121,11 @@ def test_build_synthesis_prompt_contains_raw_text():
     # No pre-tagged affect fields bleeding into the prompt anymore
     assert "emotional_valence" not in prompt
     assert "life_areas" not in prompt
+    # Coaching scaffolding regression guards
+    assert "Anti-sycophancy" in prompt
+    assert "prior_digests" in prompt
+    assert "One thing" in prompt
+    assert "Safety" in prompt
 
 
 # ── Feedback parsing ──────────────────────────────────────────────────
@@ -408,3 +413,67 @@ def test_ingest_feedback_logs_ratings():
 
     fb_rows = conn.execute("SELECT * FROM feedback_scores").fetchall()
     assert len(fb_rows) == 2
+
+
+# ── Prior-digest archive tests ─────────────────────────────────────────
+
+
+def test_archive_and_load_prior_digests_round_trip(tmp_path):
+    """_archive_digest copies to Wiki/digests/ and load_prior_digests reads it back."""
+    from dendr.config import Config
+    from dendr.digest import _archive_digest, load_prior_digests
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    digest_path = config.wiki_dir / "digest.md"
+    digest_path.write_text(
+        "---\ntype: digest\ngenerated: 2026-04-10T09:00:00\n---\n\n"
+        "# Weekly Digest\n\nSome content.\n",
+        encoding="utf-8",
+    )
+
+    _archive_digest(config, digest_path)
+
+    # 2026-04-10 falls in ISO week 15 of 2026
+    archived = config.digests_archive_dir / "2026-W15.md"
+    assert archived.exists()
+    assert "Some content." in archived.read_text(encoding="utf-8")
+
+    prior = load_prior_digests(config)
+    assert len(prior) == 1
+    assert prior[0]["iso_week"] == "2026-W15"
+    assert "Some content." in prior[0]["content"]
+
+
+def test_archive_digest_noop_when_missing(tmp_path):
+    """_archive_digest silently does nothing if digest.md doesn't exist yet."""
+    from dendr.config import Config
+    from dendr.digest import _archive_digest
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    digest_path = config.wiki_dir / "digest.md"  # doesn't exist
+    _archive_digest(config, digest_path)  # must not raise
+
+    assert not config.digests_archive_dir.exists() or not any(
+        config.digests_archive_dir.iterdir()
+    )
+
+
+def test_load_prior_digests_returns_newest_first(tmp_path):
+    """load_prior_digests sorts archive files descending and caps at n."""
+    from dendr.config import Config
+    from dendr.digest import load_prior_digests
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.digests_archive_dir.mkdir(parents=True, exist_ok=True)
+
+    for week in ["2026-W12", "2026-W13", "2026-W14", "2026-W15", "2026-W16"]:
+        (config.digests_archive_dir / f"{week}.md").write_text(
+            f"digest for {week}", encoding="utf-8"
+        )
+
+    prior = load_prior_digests(config, n=3)
+    assert [p["iso_week"] for p in prior] == ["2026-W16", "2026-W15", "2026-W14"]
