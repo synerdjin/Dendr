@@ -37,6 +37,7 @@ class BlockResult(BaseModel):
     checkbox_state: str
     completion_status: str | None = None
     score_type: ScoreType
+    score: float | None = None  # 0-1 similarity (semantic only; 1 = identical)
 
 
 class SearchResponse(BaseModel):
@@ -45,8 +46,16 @@ class SearchResponse(BaseModel):
     total: int
 
 
-def _row_to_result(row: sqlite3.Row, score_type: ScoreType) -> BlockResult:
-    return BlockResult(**db.block_row_to_dict(row), score_type=score_type)
+def _cosine_similarity(distance: float) -> float:
+    """Convert cosine distance [0,2] to similarity [0,1] where 1 = identical."""
+    return 1.0 - distance / 2.0
+
+
+def _row_to_result(
+    row: sqlite3.Row, score_type: ScoreType, *, distance: float | None = None
+) -> BlockResult:
+    score = round(_cosine_similarity(distance), 4) if distance is not None else None
+    return BlockResult(**db.block_row_to_dict(row), score_type=score_type, score=score)
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -67,6 +76,12 @@ def search(
     mode: str = Query("hybrid", description="fts, semantic, or hybrid"),
     limit: int = Query(20, ge=1, le=100),
     include_private: bool = Query(False),
+    min_score: float = Query(
+        0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score for semantic results (0-1)",
+    ),
 ) -> SearchResponse:
     """Search blocks via full-text, semantic, or hybrid."""
     if _llm is None:
@@ -92,14 +107,20 @@ def search(
             try:
                 with _llm_lock:
                     query_emb = _llm.embed(q)
-                sem_rows = db.search_blocks_semantic(
-                    conn, query_emb, limit=limit, include_private=include_private
+                # similarity = 1 - dist/2, so dist = 2*(1 - similarity)
+                max_distance = 2.0 * (1.0 - min_score)
+                sem_pairs = db.search_blocks_semantic(
+                    conn,
+                    query_emb,
+                    limit=limit,
+                    include_private=include_private,
+                    max_distance=max_distance,
                 )
-                for row in sem_rows:
+                for row, distance in sem_pairs:
                     if row["block_id"] in seen_ids:
                         continue
                     seen_ids.add(row["block_id"])
-                    results.append(_row_to_result(row, "semantic"))
+                    results.append(_row_to_result(row, "semantic", distance=distance))
             except Exception as e:
                 logger.warning("Semantic search failed: %s", e)
 

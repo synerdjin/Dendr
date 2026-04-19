@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 from dendr.db import (
     connect,
     get_block,
@@ -13,8 +15,10 @@ from dendr.db import (
     init_schema,
     insert_task_event,
     search_blocks_fts,
+    search_blocks_semantic,
     update_completion_status,
     upsert_block,
+    upsert_block_embedding,
     upsert_feedback_score,
 )
 from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN, Block
@@ -224,3 +228,76 @@ def test_task_event_with_reason():
     assert rows[1]["event_type"] == "closed"
     assert rows[1]["reason"] == "done"
     assert rows[1]["source"] == "user"
+
+
+# ── Semantic search tests ────────────────────────────────────────────
+
+DIM = 768
+
+
+def _normalize(v: np.ndarray) -> np.ndarray:
+    return v / np.linalg.norm(v)
+
+
+def _insert_block_with_embedding(conn, block_id, text, embedding, source_date):
+    block = _make_block(block_id=block_id, text=text, block_hash=block_id)
+    upsert_block(conn, block, source_date)
+    upsert_block_embedding(conn, block_id, embedding)
+    conn.commit()
+
+
+def test_semantic_search_returns_distance():
+    """Semantic results include distance values."""
+    conn = _temp_db()
+    emb = _normalize(np.random.default_rng(42).standard_normal(DIM).astype(np.float32))
+    _insert_block_with_embedding(conn, "blk-1", "close match", emb, "2026-04-08")
+
+    results = search_blocks_semantic(conn, emb, limit=10)
+    assert len(results) == 1
+    row, distance = results[0]
+    assert row["block_id"] == "blk-1"
+    assert distance < 0.01  # near-identical vector should have ~0 distance
+
+
+def test_semantic_search_distance_ordering():
+    """Results are ordered by ascending distance."""
+    conn = _temp_db()
+    rng = np.random.default_rng(42)
+    query = _normalize(rng.standard_normal(DIM).astype(np.float32))
+
+    close_emb = _normalize(query + rng.standard_normal(DIM).astype(np.float32) * 0.01)
+    _insert_block_with_embedding(conn, "blk-close", "close", close_emb, "2026-04-08")
+
+    mid_emb = _normalize(query + rng.standard_normal(DIM).astype(np.float32) * 0.5)
+    _insert_block_with_embedding(conn, "blk-mid", "mid", mid_emb, "2026-04-08")
+
+    results = search_blocks_semantic(conn, query, limit=10, max_distance=2.0)
+    assert len(results) >= 2
+    assert results[0][0]["block_id"] == "blk-close"
+    assert results[0][1] < results[1][1]
+
+
+def test_semantic_search_max_distance_filters():
+    """Results beyond max_distance are excluded."""
+    conn = _temp_db()
+    rng = np.random.default_rng(42)
+    query = _normalize(rng.standard_normal(DIM).astype(np.float32))
+
+    close_emb = query.copy()
+    _insert_block_with_embedding(conn, "blk-close", "close", close_emb, "2026-04-08")
+
+    far_emb = -query
+    _insert_block_with_embedding(conn, "blk-far", "far", far_emb, "2026-04-08")
+
+    results = search_blocks_semantic(conn, query, limit=10, max_distance=0.1)
+    ids = [r[0]["block_id"] for r in results]
+    assert "blk-close" in ids
+    assert "blk-far" not in ids
+
+
+def test_semantic_search_empty():
+    """Semantic search on empty vec table returns empty list."""
+    conn = _temp_db()
+    query = np.zeros(DIM, dtype=np.float32)
+    results = search_blocks_semantic(conn, query, limit=10)
+    assert results == []

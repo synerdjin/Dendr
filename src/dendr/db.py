@@ -134,10 +134,27 @@ def init_schema(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS blocks_vec "
-            "USING vec0(embedding float[768], block_id text)"
+            "USING vec0(embedding float[768] distance_metric=cosine, block_id text)"
         )
     except sqlite3.OperationalError as e:
         logger.debug("blocks_vec creation skipped: %s", e)
+
+    # Migration: recreate blocks_vec with cosine distance metric if an older
+    # DB created it with the sqlite-vec default (L2). Detected by inspecting
+    # the CREATE statement for the `distance_metric` keyword.
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='blocks_vec'"
+        ).fetchone()
+        if row and "distance_metric" not in (row[0] or "").lower():
+            logger.info("Migrating blocks_vec to cosine distance metric")
+            conn.execute("DROP TABLE blocks_vec")
+            conn.execute(
+                "CREATE VIRTUAL TABLE blocks_vec "
+                "USING vec0(embedding float[768] distance_metric=cosine, block_id text)"
+            )
+    except sqlite3.OperationalError as e:
+        logger.debug("blocks_vec migration skipped: %s", e)
 
     # Drop tables from pre-v3 schemas so re-running init on an old DB is idempotent.
     for table in (
@@ -390,8 +407,14 @@ def search_blocks_semantic(
     embedding: np.ndarray,
     limit: int = 50,
     include_private: bool = True,
-) -> list[sqlite3.Row]:
-    """Semantic search across blocks via blocks_vec."""
+    max_distance: float = 2.0,
+) -> list[tuple[sqlite3.Row, float]]:
+    """Semantic search across blocks via blocks_vec.
+
+    Returns (row, distance) tuples ordered by ascending distance.
+    Results with distance > max_distance are excluded.
+    Cosine distance range is [0, 2] where 0 = identical.
+    """
     try:
         vec_rows = conn.execute(
             """
@@ -405,10 +428,18 @@ def search_blocks_semantic(
     except sqlite3.OperationalError:
         return []
 
-    if not vec_rows:
+    ids: list[str] = []
+    dist_by_id: dict[str, float] = {}
+    for r in vec_rows:
+        dist = r["distance"]
+        if dist <= max_distance:
+            bid = r["block_id"]
+            ids.append(bid)
+            dist_by_id[bid] = dist
+
+    if not ids:
         return []
 
-    ids = [r["block_id"] for r in vec_rows]
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
     q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
@@ -416,7 +447,16 @@ def search_blocks_semantic(
         q += " AND private = 0"
     q += " LIMIT ?"
     params.append(limit)
-    return conn.execute(q, params).fetchall()
+    rows = conn.execute(q, params).fetchall()
+
+    # Re-sort by vector distance (IN-clause doesn't preserve order)
+    result = [
+        (row, dist_by_id[row["block_id"]])
+        for row in rows
+        if row["block_id"] in dist_by_id
+    ]
+    result.sort(key=lambda x: x[1])
+    return result
 
 
 # ── Stats ─────────────────────────────────────────────────────────────
