@@ -124,7 +124,14 @@ def daemon(data_dir: str | None, vault: str | None) -> None:
 
 @main.command()
 @click.option("--data-dir", type=click.Path(), default=None)
-def ingest(data_dir: str | None) -> None:
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path (e.g. for containerized runs where the saved "
+    "config.json path is from the host)",
+)
+def ingest(data_dir: str | None, vault: str | None) -> None:
     """Run a single ingest cycle."""
     from dendr.config import Config
     from dendr.db import connect, init_schema
@@ -133,6 +140,8 @@ def ingest(data_dir: str | None) -> None:
 
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
     conn = connect(config.db_path)
     init_schema(conn)
     llm = LLMClient(config)
