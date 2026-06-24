@@ -2,24 +2,6 @@
 # Run `dendr models pull` to download, `dendr models lock` to pin SHA256 hashes.
 version: 1
 models:
-  vlm:
-    repo: unsloth/gemma-4-E4B-it-GGUF
-    filename: gemma-4-E4B-it-Q4_K_M.gguf
-    sha256: dff0ffba4c90b4082d70214d53ce9504a28d4d8d998276dcb3b8881a656c742a
-    size_bytes: 4977169088
-    role: Vision/OCR backbone for image and scanned-PDF attachments (Gemma 4 E4B)
-    context: 4096
-    gpu_layers: -1
-    gated: false
-  vlm_mmproj:
-    repo: unsloth/gemma-4-E4B-it-GGUF
-    filename: mmproj-BF16.gguf
-    sha256: 6d521435bed84c9aade3685f4bc3bce5898dec2b1f1d17f7452ebfaeedc375fb
-    size_bytes: 991552448
-    role: Vision projector for Gemma 4 E4B
-    context: 0
-    gpu_layers: -1
-    gated: false
   embedding:
     repo: nomic-ai/nomic-embed-text-v1.5-GGUF
     filename: nomic-embed-text-v1.5.f16.gguf

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -23,10 +23,7 @@ def _default_data_dir() -> Path:
 class ModelConfig:
     """Local model configuration."""
 
-    vlm_model: str = "gemma-4-E4B-it-Q4_K_M.gguf"
-    vlm_mmproj: str = "mmproj-BF16.gguf"
     embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
-    vlm_ctx: int = 4096
     embedding_dim: int = 768
 
 
@@ -161,10 +158,7 @@ class Config:
             "vault_path": str(self.vault_path),
             "vault_id": self.vault_id,
             "models": {
-                "vlm_model": self.models.vlm_model,
-                "vlm_mmproj": self.models.vlm_mmproj,
                 "embedding_model": self.models.embedding_model,
-                "vlm_ctx": self.models.vlm_ctx,
                 "embedding_dim": self.models.embedding_dim,
             },
             "search_port": self.search_port,
@@ -180,7 +174,9 @@ class Config:
             return cls(data_dir=dd)
         data = json.loads(config_path.read_text())
         model_data = data.get("models", {})
-        models = ModelConfig(**model_data)
+        # Drop unknown keys (e.g. legacy vlm_* fields) for backward compat.
+        valid = {f.name for f in fields(ModelConfig)}
+        models = ModelConfig(**{k: v for k, v in model_data.items() if k in valid})
         return cls(
             vault_path=Path(data["vault_path"]),
             data_dir=dd,

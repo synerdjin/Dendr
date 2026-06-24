@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Dendr
 
-A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly and does classification, affect reading, and narrative synthesis in one pass. Local models handle only embeddings (for semantic search) and vision/OCR (for image/PDF attachments).
+A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly and does classification, affect reading, and narrative synthesis in one pass. Local models handle only embeddings (for semantic search).
 
 > **Upgrade note (v3):** the text tagger and `block_annotations` schema were removed. If you have a pre-existing `state.sqlite`, rebuild it: `rm state.sqlite && dendr ingest`. The schema no longer contains `block_annotations`, `annotations_fts`, `annotations_vec`, or `block_state`. Claude now reads raw block text at digest synthesis time instead of pre-computed annotations.
 
@@ -29,9 +29,11 @@ dendr ingest                          # single ingest cycle
 dendr search "query" --mode hybrid
 dendr serve                           # search server on :7777
 dendr serve --host 0.0.0.0            # bind all interfaces (Docker)
+dendr mcp                             # MCP server (stdio) for Claude clients; needs dendr[mcp]
 dendr stats
 dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
+dendr digest --review                 # long-horizon health-check meta-review prompt
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
 
@@ -80,7 +82,7 @@ dendr digest --claude
 - **privacy.py** — Regex-based filter that tags blocks containing secrets or `#dendr-private`/`#private`/`#redact` tags. Private blocks are stored locally but never sent to Claude
 - **queue.py** — File-based two-phase commit queue (pending → processing → done). On crash, items in processing/ are recovered on restart
 - **db.py** — SQLite with FTS5 and `sqlite-vec`. Tables: `blocks`, `blocks_fts`, `blocks_vec`, `feedback_scores`, `task_events`. Uses WAL mode
-- **llm.py** — `LLMClient` wrapper around llama-cpp-python. Methods: `embed()` for semantic search, `extract_text_from_image()` / `extract_text_from_pdf()` for on-demand vision/OCR
+- **llm.py** — `LLMClient` wrapper around llama-cpp-python. Methods: `embed()` / `embed_batch()` for semantic search
 - **model_manager.py** — Declarative model manifest (`dendr-models.yaml`), HuggingFace download, SHA256 verification and locking
 - **pipeline.py** — Ingest pipeline: parse → privacy → queue → embed → commit. Runs `reconcile_closures` first so user digest edits are in place before re-parse. Checkbox transitions (open→closed, closed→open) are logged as `task_events`
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
@@ -90,9 +92,8 @@ dendr digest --claude
 
 ### Models
 
-Declared in `dendr-models.yaml`. Two GGUF models run via llama-cpp-python:
+Declared in `dendr-models.yaml`. One GGUF model runs via llama-cpp-python:
 
-- **vlm** (Gemma 4 E4B, Q4_K_M) + **vlm_mmproj** — on-demand vision/OCR for image and scanned-PDF attachments. Not used for text blocks
 - **embedding** (nomic-embed-text-v1.5, FP16) — 768d Matryoshka embeddings for semantic search over raw block text
 
 ### Storage split

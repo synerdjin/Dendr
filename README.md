@@ -2,7 +2,7 @@
 
 A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
 
-**Local models do only what Claude can't or shouldn't**: embeddings for semantic search, and vision/OCR for image and scanned-PDF attachments. **Claude (via Claude Code)** handles weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
+**Local models do only what Claude can't or shouldn't**: embeddings for semantic search. **Claude (via Claude Code)** handles weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
 
 ## How it works
 
@@ -19,7 +19,7 @@ Wiki/digest.md (you read here, on any device)
 ## Requirements
 
 - Python 3.11+
-- GPU with 6GB+ VRAM (for embeddings; more if you use vision/OCR)
+- GPU with 6GB+ VRAM (for embeddings)
 - Local model weights (see [Model Setup](#model-setup))
 - Obsidian vault synced via iCloud (or any sync)
 
@@ -86,8 +86,6 @@ dendr models lock    # pin hashes for reproducibility
 
 | Role | Model | Size | Purpose |
 |------|-------|------|---------|
-| Vision | [Gemma 4 E4B Q4_K_M](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF) | ~5 GB | On-demand vision/OCR for image and scanned-PDF attachments |
-| Vision projector | mmproj-BF16 (same repo) | ~1 GB | Bridges vision encoder for image input |
 | Embeddings | [nomic-embed-text-v1.5 FP16](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
 Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux). Only one model is loaded in VRAM at a time.
