@@ -1,4 +1,4 @@
-"""Local-inference surface: embeddings (Nomic) and on-demand vision/OCR (VLM)."""
+"""Local-inference surface: embeddings (Nomic)."""
 
 from __future__ import annotations
 
@@ -25,8 +25,6 @@ _models: dict[str, Any] = {}
 def _model_role_from_path(model_path: Path) -> str:
     """Derive a short role label from a model filename for metrics."""
     name = model_path.stem.lower()
-    if "gemma" in name:
-        return "vision"
     if "nomic" in name or "embed" in name:
         return "embedding"
     return "unknown"
@@ -50,22 +48,17 @@ def _get_model(
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
     embedding: bool = False,
-    chat_handler: Any = None,
 ) -> Any:
     """Get or create a llama-cpp-python model instance.
 
     Only one model is kept in VRAM at a time to fit within GPU memory.
-    Pass chat_handler for vision models that need an mmproj projector.
     """
     from llama_cpp import Llama
 
-    # Use a different cache key for vision vs text-only mode of the same model
-    key = str(model_path) + (":vision" if chat_handler else "")
+    key = str(model_path)
     if key not in _models:
         _unload_all_except(None)
         role = _model_role_from_path(model_path)
-        if chat_handler:
-            role = "vision"
         logger.info("Loading model: %s (ctx=%d)", model_path.name, n_ctx)
         t0 = time.monotonic()
         kwargs: dict[str, Any] = {
@@ -75,8 +68,6 @@ def _get_model(
             "verbose": False,
             "embedding": embedding,
         }
-        if chat_handler:
-            kwargs["chat_handler"] = chat_handler
         _models[key] = Llama(**kwargs)
         MODEL_LOAD_SECONDS.labels(model_role=role).observe(time.monotonic() - t0)
         MODEL_LOADED.labels(model_role=role).set(1)
@@ -92,7 +83,7 @@ def unload_all() -> None:
 
 
 class LLMClient:
-    """Local-inference surface: embeddings + vision/OCR."""
+    """Local-inference surface: embeddings."""
 
     def __init__(self, config: Config, skip_preflight: bool = False):
         self.config = config
@@ -168,83 +159,3 @@ class LLMClient:
             else:
                 out.append(np.array([r], dtype=np.float32))
         return out
-
-    def extract_text_from_image(self, image_path: str) -> str:
-        """OCR / caption an image using the VLM.
-
-        Returns an empty string on failure. Loaded on demand — the VLM
-        stays off the GPU during normal text ingest.
-        """
-        try:
-            import base64
-
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode()
-
-            from llama_cpp.llama_chat_format import Llava15ChatHandler
-
-            mmproj_path = self._model_path(self.config.models.vlm_mmproj)
-            handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-            model = _get_model(
-                self._model_path(self.config.models.vlm_model),
-                n_ctx=self.config.models.vlm_ctx,
-                chat_handler=handler,
-            )
-            t0 = time.monotonic()
-            response = model.create_chat_completion(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Describe this image in detail. If it contains text, transcribe all visible text.",
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_b64}"
-                                },
-                            },
-                        ],
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=2048,
-            )
-            INFERENCE_SECONDS.labels(model_role="vision", task="ocr").observe(
-                time.monotonic() - t0
-            )
-            return response["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            logger.warning("VLM extraction failed for %s: %s", image_path, e)
-            return ""
-
-    def extract_text_from_pdf(self, pdf_path: str) -> str:
-        """Extract text from a PDF. Uses PyMuPDF; falls back to VLM for scans."""
-        import fitz  # pymupdf
-
-        doc = fitz.open(pdf_path)
-        text_parts: list[str] = []
-        for page in doc:
-            page_text = page.get_text().strip()
-            if page_text:
-                text_parts.append(page_text)
-        doc.close()
-
-        full_text = "\n\n".join(text_parts)
-        if len(full_text) < 50 and Path(pdf_path).stat().st_size > 10000:
-            logger.info("PDF appears scanned, attempting VLM OCR: %s", pdf_path)
-            doc = fitz.open(pdf_path)
-            if doc.page_count > 0:
-                page = doc[0]
-                pix = page.get_pixmap(dpi=200)
-                img_path = str(Path(pdf_path).with_suffix(".tmp.png"))
-                pix.save(img_path)
-                doc.close()
-                text = self.extract_text_from_image(img_path)
-                Path(img_path).unlink(missing_ok=True)
-                return text
-            doc.close()
-
-        return full_text
