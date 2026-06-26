@@ -21,6 +21,30 @@ logger = logging.getLogger(__name__)
 # Lazy-loaded model instances
 _models: dict[str, Any] = {}
 
+# Embedding models are trained with task-instruction prefixes that distinguish a
+# search *query* from a stored *document*. Skipping them uses the model
+# out-of-distribution and measurably degrades retrieval, so we always apply the
+# right prompt for the active model family.
+EmbedKind = str  # "query" | "document"
+
+
+def _format_for_embedding(text: str, kind: EmbedKind, model_filename: str) -> str:
+    """Wrap text in the active model's task-instruction prompt.
+
+    EmbeddingGemma uses ``task: search result | query: …`` for queries and
+    ``title: none | text: …`` for documents. Nomic uses ``search_query:`` /
+    ``search_document:`` prefixes. Unknown models are passed through verbatim.
+    """
+    name = model_filename.lower()
+    if "gemma" in name:
+        if kind == "query":
+            return f"task: search result | query: {text}"
+        return f"title: none | text: {text}"
+    if "nomic" in name:
+        prefix = "search_query" if kind == "query" else "search_document"
+        return f"{prefix}: {text}"
+    return text
+
 
 def _model_role_from_path(model_path: Path) -> str:
     """Derive a short role label from a model filename for metrics."""
@@ -126,15 +150,20 @@ class LLMClient:
     def _embedding_model(self) -> Any:
         return _get_model(
             self._model_path(self.config.models.embedding_model),
-            n_ctx=512,
+            n_ctx=2048,
             embedding=True,
         )
 
-    def embed(self, text: str) -> np.ndarray:
-        """Generate an embedding vector for text."""
+    def embed(self, text: str, kind: EmbedKind = "document") -> np.ndarray:
+        """Generate an embedding vector for text.
+
+        ``kind`` selects the task-instruction prompt: ``"query"`` for search
+        queries, ``"document"`` (default) for stored block text.
+        """
         model = self._embedding_model()
+        prompt = _format_for_embedding(text, kind, self.config.models.embedding_model)
         t0 = time.monotonic()
-        result = model.embed(text)
+        result = model.embed(prompt)
         INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(
             time.monotonic() - t0
         )
@@ -144,11 +173,17 @@ class LLMClient:
             vec = np.array(result, dtype=np.float32)
         return vec
 
-    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
-        """Embed multiple texts efficiently."""
+    def embed_batch(
+        self, texts: list[str], kind: EmbedKind = "document"
+    ) -> list[np.ndarray]:
+        """Embed multiple texts efficiently. ``kind`` as in :meth:`embed`."""
         model = self._embedding_model()
+        prompts = [
+            _format_for_embedding(t, kind, self.config.models.embedding_model)
+            for t in texts
+        ]
         t0 = time.monotonic()
-        results = model.embed(texts)
+        results = model.embed(prompts)
         INFERENCE_SECONDS.labels(model_role="embedding", task="embed_batch").observe(
             time.monotonic() - t0
         )

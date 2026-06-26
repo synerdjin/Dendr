@@ -23,7 +23,7 @@ def _default_data_dir() -> Path:
 class ModelConfig:
     """Local model configuration."""
 
-    embedding_model: str = "nomic-embed-text-v1.5.f16.gguf"
+    embedding_model: str = "embeddinggemma-300m-qat-Q8_0.gguf"
     embedding_dim: int = 768
 
 
