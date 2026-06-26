@@ -14,6 +14,7 @@ from dendr.db import (
     get_stats,
     init_schema,
     insert_task_event,
+    rrf_fuse,
     search_blocks_fts,
     search_blocks_semantic,
     update_completion_status,
@@ -301,3 +302,47 @@ def test_semantic_search_empty():
     query = np.zeros(DIM, dtype=np.float32)
     results = search_blocks_semantic(conn, query, limit=10)
     assert results == []
+
+
+def _rows_by_id(conn, ids):
+    for bid in ids:
+        block = _make_block(block_id=bid, text=f"text {bid}", block_hash=bid)
+        upsert_block(conn, block, "2026-04-08")
+    conn.commit()
+    return {r["block_id"]: r for r in conn.execute("SELECT * FROM blocks")}
+
+
+def test_rrf_fuse_rewards_agreement():
+    """A doc ranked highly by both FTS and semantic wins the fusion."""
+    conn = _temp_db()
+    rows = _rows_by_id(conn, ["a", "b", "c"])
+    fts_rows = [rows["b"], rows["a"], rows["c"]]  # b #1
+    sem_pairs = [(rows["b"], 0.9), (rows["c"], 0.8), (rows["a"], 0.7)]  # b #1
+    fused = rrf_fuse(fts_rows, sem_pairs, limit=10)
+    ids = [r["block_id"] for r, _score, _sim in fused]
+    assert ids[0] == "b"
+    # Semantic similarity is surfaced for docs that appeared in the semantic list.
+    sim_by_id = {r["block_id"]: sim for r, _score, sim in fused}
+    assert sim_by_id["b"] == 0.9
+
+
+def test_rrf_fuse_includes_single_list_doc():
+    """A strong semantic-only hit still surfaces (no starvation by FTS)."""
+    conn = _temp_db()
+    rows = _rows_by_id(conn, ["a", "b", "z"])
+    fts_rows = [rows["a"], rows["b"]]  # z absent from FTS
+    sem_pairs = [(rows["z"], 0.95)]  # z is the top semantic hit
+    fused = rrf_fuse(fts_rows, sem_pairs, limit=10)
+    ids = [r["block_id"] for r, _score, _sim in fused]
+    assert "z" in ids
+    # similarity is None for FTS-only docs
+    sim_by_id = {r["block_id"]: sim for r, _score, sim in fused}
+    assert sim_by_id["a"] is None
+
+
+def test_rrf_fuse_respects_limit():
+    conn = _temp_db()
+    rows = _rows_by_id(conn, ["a", "b", "c"])
+    fts_rows = [rows["a"], rows["b"], rows["c"]]
+    fused = rrf_fuse(fts_rows, [], limit=2)
+    assert len(fused) == 2

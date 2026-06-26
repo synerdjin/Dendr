@@ -10,7 +10,7 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 Daily Notes (you write here)
     ↓ watcher detects changes
     ↓ block-level parsing + privacy filter
-    ↓ embed raw block text (Nomic)
+    ↓ embed raw block text (EmbeddingGemma)
     ↓ commit to SQLite (blocks + FTS + vector index)
     ↓ log task_events on checkbox transitions
 Wiki/digest.md (you read here, on any device)
@@ -19,7 +19,7 @@ Wiki/digest.md (you read here, on any device)
 ## Requirements
 
 - Python 3.11+
-- GPU with 6GB+ VRAM (for embeddings)
+- A GPU for embeddings — **NVIDIA** (6GB+ VRAM, via CUDA) **or Apple Silicon** (via Metal). CPU-only works but is slower.
 - Local model weights (see [Model Setup](#model-setup))
 - Obsidian vault synced via iCloud (or any sync)
 
@@ -73,6 +73,9 @@ dendr serve
 | `dendr models verify` | Check SHA256 integrity of models |
 | `dendr models list` | Show model status table |
 | `dendr models lock` | Pin SHA256 hashes into manifest |
+| `dendr autostart install` | Run the daemon on login via a macOS LaunchAgent |
+| `dendr autostart status` | Show whether the login agent is installed / loaded |
+| `dendr autostart uninstall` | Stop and remove the login agent |
 
 ## Model setup
 
@@ -86,23 +89,47 @@ dendr models lock    # pin hashes for reproducibility
 
 | Role | Model | Size | Purpose |
 |------|-------|------|---------|
-| Embeddings | [nomic-embed-text-v1.5 FP16](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
+| Embeddings | [embeddinggemma-300m QAT Q8_0](https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
 Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux). Only one model is loaded in VRAM at a time.
 
-## Docker
+## Running it: native (macOS) vs Docker (Linux/NVIDIA)
 
-For reproducible deployment with GPU access:
+Pick the path that matches your hardware — they are **not** interchangeable.
+
+### Native — recommended on macOS / Apple Silicon
+
+The bundled Docker image is built on `nvidia/cuda` and reserves NVIDIA GPUs, so it
+**cannot use the Apple Metal GPU** — Docker Desktop on macOS runs a Linux VM with no
+Metal passthrough, which would silently fall back to CPU-only inference. Running
+natively builds `llama-cpp-python` with Metal, so embeddings actually use the GPU.
+Native also gives the file watcher real macOS FSEvents (cross-VM file watching into a
+bind-mounted iCloud folder is unreliable).
 
 ```bash
-# Start daemon + search server + monitoring
-docker compose up -d
+# Use a dedicated venv so the autostart agent has a stable interpreter to pin.
+python3 -m venv ~/.dendr-venv
+~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal on Apple Silicon
+~/.dendr-venv/bin/dendr init /path/to/vault
+~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
 
-# Check it's working
+# Run the daemon on every login (writes a launchd LaunchAgent):
+~/.dendr-venv/bin/dendr autostart install
+```
+
+`dendr serve` still exposes Prometheus metrics at `localhost:7777/metrics`; run
+Prometheus/Grafana via Homebrew if you want dashboards.
+
+### Docker — for a Linux box with an NVIDIA GPU
+
+```bash
+docker compose up -d        # daemon + search server + Prometheus/Grafana monitoring
 curl http://localhost:7777/stats
 ```
 
-Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) for GPU passthrough.
+Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+for GPU passthrough. This is the right choice for a headless Linux/NVIDIA deployment,
+not for a Mac.
 
 ## Architecture
 

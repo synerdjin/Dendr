@@ -7,6 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly and does classification, affect reading, and narrative synthesis in one pass. Local models handle only embeddings (for semantic search).
 
 > **Upgrade note (v3):** the text tagger and `block_annotations` schema were removed. If you have a pre-existing `state.sqlite`, rebuild it: `rm state.sqlite && dendr ingest`. The schema no longer contains `block_annotations`, `annotations_fts`, `annotations_vec`, or `block_state`. Claude now reads raw block text at digest synthesis time instead of pre-computed annotations.
+>
+> **Upgrade note (v4):** the embedding model changed from nomic-embed-text-v1.5 to **embeddinggemma-300m** (still 768d, so `blocks_vec` is unchanged), and embeddings now carry task-instruction prompts. The vector space is different, so stored embeddings must be regenerated: `dendr models pull` then `rm state.sqlite && dendr ingest`. Hybrid search now fuses FTS + semantic with Reciprocal Rank Fusion instead of concatenation.
 
 ## Commands
 
@@ -37,6 +39,11 @@ dendr digest --review                 # long-horizon health-check meta-review pr
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
 
+# Run the daemon on login (macOS launchd LaunchAgent)
+dendr autostart install               # write ~/Library/LaunchAgents/com.dendr.daemon.plist + load it
+dendr autostart status                # is the agent installed / loaded?
+dendr autostart uninstall             # stop + remove the agent
+
 # Search API (requires dendr serve or Docker search container)
 curl "http://localhost:7777/search?q=your+query&mode=hybrid&limit=10"
 curl "http://localhost:7777/search?q=your+query&mode=semantic&limit=5"
@@ -59,7 +66,7 @@ DENDR_LOG_JSON=1 dendr daemon
 Daily/*.md  →  parser (block_id, source_date, checkbox_state, hash)
            →  privacy filter
            →  queue (pending/processing/done)
-           →  embed raw text (Nomic, model stays loaded)
+           →  embed raw text (EmbeddingGemma, model stays loaded)
            →  commit: blocks upsert + blocks_fts + blocks_vec
                      + task_events for checkbox transitions
 
@@ -88,13 +95,14 @@ dendr digest --claude
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
 - **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over raw block text), `/stats`, and `/metrics` endpoints. Semantic and hybrid results carry a 0-1 `score` (cosine similarity); `min_score` filters out weak matches. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
+- **autostart.py** — macOS launchd LaunchAgent generation (`dendr autostart install/uninstall/status`). Renders a `~/Library/LaunchAgents/com.dendr.daemon.plist` that runs `<python> -m dendr daemon` with `RunAtLoad` + `KeepAlive` so the daemon starts on login and respawns on crash. Pure plist rendering is unit-tested; launchctl bootstrap/bootout is wrapped with legacy load/unload fallback
 - **digest.py** — Weekly digest generator. Assembles a raw-text payload (this-period blocks + carried-forward open tasks + user context + last 4 archived digests) and either writes a Claude synthesis prompt to `Wiki/_digest_prompt.md` or renders a minimal local digest. The prompt body lives in `templates/synthesis_prompt.md`. The `## Task Review` section carries age-bucketed closure markers. Before overwriting, the prior `digest.md` is archived to `Wiki/digests/{ISO-week}.md` for cross-week context
 
 ### Models
 
 Declared in `dendr-models.yaml`. One GGUF model runs via llama-cpp-python:
 
-- **embedding** (nomic-embed-text-v1.5, FP16) — 768d Matryoshka embeddings for semantic search over raw block text
+- **embedding** (embeddinggemma-300m, QAT Q8_0) — 768d Matryoshka embeddings (2048-token context) for semantic search over raw block text. Queries and documents are embedded with EmbeddingGemma's task-instruction prompts (`task: search result | query: …` / `title: none | text: …`); skipping these degrades retrieval, so the prompt layer lives in `llm.py` and is keyed on the active model family
 
 ### Storage split
 

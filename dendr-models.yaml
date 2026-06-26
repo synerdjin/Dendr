@@ -3,11 +3,11 @@
 version: 1
 models:
   embedding:
-    repo: nomic-ai/nomic-embed-text-v1.5-GGUF
-    filename: nomic-embed-text-v1.5.f16.gguf
-    sha256: f7af6f66802f4df86eda10fe9bbcfc75c39562bed48ef6ace719a251cf1c2fdb
-    size_bytes: 274290560
-    role: Text embeddings for semantic search (768d Matryoshka, FP16)
-    context: 512
+    repo: ggml-org/embeddinggemma-300m-qat-q8_0-GGUF
+    filename: embeddinggemma-300m-qat-Q8_0.gguf
+    sha256: 6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67
+    size_bytes: 328577056
+    role: Text embeddings for semantic search (768d Matryoshka, QAT Q8_0)
+    context: 2048
     gpu_layers: -1
     gated: false

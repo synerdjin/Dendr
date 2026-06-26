@@ -238,45 +238,31 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
     conn = dendr_db.connect(config.db_path)
     dendr_db.init_schema(conn)
 
-    results: list[dict] = []
-    seen_ids: set[str] = set()
+    pool = limit * 2 if mode == "hybrid" else limit
 
+    fts_rows: list = []
     if mode in ("fts", "hybrid"):
-        fts = dendr_db.search_blocks_fts(conn, query, limit=limit)
-        for r in fts:
-            if r["block_id"] in seen_ids:
-                continue
-            seen_ids.add(r["block_id"])
-            results.append(
-                {
-                    "block_id": r["block_id"],
-                    "text": r["text"],
-                    "source": r["source_file"],
-                    "date": r["source_date"],
-                    "type": "fts",
-                }
-            )
+        fts_rows = dendr_db.search_blocks_fts(conn, query, limit=pool)
 
+    sem_pairs: list = []
     if mode in ("semantic", "hybrid"):
         try:
             llm = LLMClient(config)
-            emb = llm.embed(query)
-            sem = dendr_db.search_blocks_semantic(conn, emb, limit=limit)
-            for r in sem:
-                if r["block_id"] in seen_ids:
-                    continue
-                seen_ids.add(r["block_id"])
-                results.append(
-                    {
-                        "block_id": r["block_id"],
-                        "text": r["text"],
-                        "source": r["source_file"],
-                        "date": r["source_date"],
-                        "type": "semantic",
-                    }
-                )
+            emb = llm.embed(query, kind="query")
+            sem_pairs = dendr_db.search_blocks_semantic(conn, emb, limit=pool)
         except Exception as e:
             click.echo(f"Semantic search unavailable: {e}", err=True)
+
+    results: list[tuple[str, object]] = []  # (score_type, row)
+    if mode == "hybrid":
+        results = [
+            ("hybrid", row)
+            for row, _score, _sim in dendr_db.rrf_fuse(fts_rows, sem_pairs, limit)
+        ]
+    elif mode == "semantic":
+        results = [("semantic", row) for row, _sim in sem_pairs[:limit]]
+    else:  # fts
+        results = [("fts", row) for row in fts_rows[:limit]]
 
     conn.close()
 
@@ -284,9 +270,9 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
         click.echo("No results found.")
         return
 
-    for r in results[:limit]:
-        snippet = r["text"].splitlines()[0][:120] if r["text"] else ""
-        click.echo(f"  [{r['type']:8s}] {r['date']}  {snippet}")
+    for score_type, row in results:
+        snippet = row["text"].splitlines()[0][:120] if row["text"] else ""
+        click.echo(f"  [{score_type:8s}] {row['source_date']}  {snippet}")
 
 
 @main.command()
@@ -525,6 +511,98 @@ def models_lock(data_dir: str | None) -> None:
     for role, h in hashes.items():
         click.echo(f"  [{role}] {h[:16]}...")
     click.echo("\nCommit dendr-models.yaml to pin these versions.")
+
+
+@main.group()
+def autostart() -> None:
+    """Manage the login LaunchAgent that runs the daemon (macOS)."""
+
+
+def _require_macos() -> None:
+    if sys.platform != "darwin":
+        raise click.ClickException(
+            "`dendr autostart` uses macOS launchd and only works on macOS. "
+            "On Linux use a systemd user unit; on Windows use Task Scheduler."
+        )
+
+
+@autostart.command("install")
+@click.option("--data-dir", type=click.Path(), default=None)
+def autostart_install(data_dir: str | None) -> None:
+    """Install + load a LaunchAgent so the daemon starts on login."""
+    from dendr import autostart as agent
+    from dendr.config import Config
+
+    _require_macos()
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    config.logs_dir.mkdir(parents=True, exist_ok=True)
+
+    if not config.config_file_path.exists():
+        click.echo(
+            f"⚠  No saved config at {config.config_file_path}. "
+            "Run `dendr init <vault>` first, or the daemon will fail to start.",
+            err=True,
+        )
+
+    working_dir = str(config.vault_path) if config.vault_path.exists() else None
+    plist = agent.render_plist(
+        agent.program_args(config.data_dir),
+        stdout_path=str(config.logs_dir / "daemon.out.log"),
+        stderr_path=str(config.logs_dir / "daemon.err.log"),
+        working_dir=working_dir,
+    )
+
+    path = agent.plist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plist)
+
+    # Reload cleanly if a previous agent is already loaded.
+    agent.unload_agent(path)
+    rc, out = agent.load_agent(path)
+    if rc != 0:
+        raise click.ClickException(
+            f"Wrote {path} but `launchctl` failed to load it:\n{out}"
+        )
+
+    click.echo(f"✓ Installed LaunchAgent: {path}")
+    click.echo(f"  Runs: {' '.join(agent.program_args(config.data_dir))}")
+    click.echo(f"  Logs: {config.logs_dir}/daemon.{{out,err}}.log")
+    click.echo("  The daemon is now running and will start on every login.")
+    click.echo("  Manage it with `dendr autostart status` / `... uninstall`.")
+
+
+@autostart.command("uninstall")
+def autostart_uninstall() -> None:
+    """Stop + remove the login LaunchAgent."""
+    from dendr import autostart as agent
+
+    _require_macos()
+
+    path = agent.plist_path()
+    agent.unload_agent(path)
+    if path.exists():
+        path.unlink()
+        click.echo(f"✓ Removed LaunchAgent: {path}")
+    else:
+        click.echo(f"No LaunchAgent found at {path}; nothing to remove.")
+
+
+@autostart.command("status")
+def autostart_status() -> None:
+    """Show whether the login LaunchAgent is installed and loaded."""
+    from dendr import autostart as agent
+
+    _require_macos()
+
+    path = agent.plist_path()
+    installed = path.exists()
+    loaded = agent.is_loaded()
+    click.echo(f"Plist:  {path}  ({'present' if installed else 'absent'})")
+    click.echo(f"Loaded: {'yes (running / scheduled)' if loaded else 'no'}")
+    if installed and not loaded:
+        click.echo("  Installed but not loaded — try `dendr autostart install`.")
 
 
 # --- Schema and prompt generation ---

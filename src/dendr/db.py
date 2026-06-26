@@ -461,6 +461,40 @@ def search_blocks_semantic(
     return result[:limit]
 
 
+def rrf_fuse(
+    fts_rows: list[sqlite3.Row],
+    sem_pairs: list[tuple[sqlite3.Row, float]],
+    limit: int,
+    k: int = 60,
+) -> list[tuple[sqlite3.Row, float, float | None]]:
+    """Reciprocal Rank Fusion of the FTS and semantic result lists.
+
+    Each list contributes ``1 / (k + rank)`` per document (rank is 1-based, in
+    list order). This fuses two rankings whose raw scores aren't comparable
+    (BM25 vs cosine) without tuning a weight. Returns ``(row, rrf_score,
+    similarity)`` tuples sorted by descending fused score; ``similarity`` is the
+    semantic cosine score when the doc appeared in the semantic list, else None.
+    """
+    scores: dict[str, float] = {}
+    rows: dict[str, sqlite3.Row] = {}
+    sims: dict[str, float] = {}
+
+    for rank, row in enumerate(fts_rows, start=1):
+        bid = row["block_id"]
+        scores[bid] = scores.get(bid, 0.0) + 1.0 / (k + rank)
+        rows.setdefault(bid, row)
+
+    for rank, (row, sim) in enumerate(sem_pairs, start=1):
+        bid = row["block_id"]
+        scores[bid] = scores.get(bid, 0.0) + 1.0 / (k + rank)
+        rows.setdefault(bid, row)
+        sims[bid] = sim
+
+    fused = [(rows[bid], score, sims.get(bid)) for bid, score in scores.items()]
+    fused.sort(key=lambda x: x[1], reverse=True)
+    return fused[:limit]
+
+
 # ── Stats ─────────────────────────────────────────────────────────────
 
 

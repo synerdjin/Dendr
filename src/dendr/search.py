@@ -26,7 +26,7 @@ _db_path: Path | None = None
 _llm: LLMClient | None = None
 _llm_lock = threading.Lock()
 
-ScoreType = Literal["fts", "semantic"]
+ScoreType = Literal["fts", "semantic", "hybrid"]
 
 
 class BlockResult(BaseModel):
@@ -84,43 +84,50 @@ def search(
     conn = _get_conn()
     try:
         t0 = time.monotonic()
+        # Pull a deeper candidate pool than `limit` for hybrid so fusion has
+        # material to rerank; pure modes fetch exactly what they return.
+        pool = limit * 2 if mode == "hybrid" else limit
 
-        results: list[BlockResult] = []
-        seen_ids: set[str] = set()
-
+        fts_rows: list[sqlite3.Row] = []
         if mode in ("fts", "hybrid"):
             fts_rows = db.search_blocks_fts(
-                conn, q, limit=limit, include_private=include_private
+                conn, q, limit=pool, include_private=include_private
             )
-            for row in fts_rows:
-                if row["block_id"] in seen_ids:
-                    continue
-                seen_ids.add(row["block_id"])
-                results.append(_row_to_result(row, "fts"))
 
+        sem_pairs: list[tuple[sqlite3.Row, float]] = []
         if mode in ("semantic", "hybrid"):
             try:
                 with _llm_lock:
-                    query_emb = _llm.embed(q)
+                    query_emb = _llm.embed(q, kind="query")
                 sem_pairs = db.search_blocks_semantic(
                     conn,
                     query_emb,
-                    limit=limit,
+                    limit=pool,
                     include_private=include_private,
                     min_similarity=min_score,
                 )
-                for row, similarity in sem_pairs:
-                    if row["block_id"] in seen_ids:
-                        continue
-                    seen_ids.add(row["block_id"])
-                    results.append(
-                        _row_to_result(row, "semantic", similarity=similarity)
-                    )
             except Exception as e:
                 logger.warning("Semantic search failed: %s", e)
 
+        results: list[BlockResult] = []
+        if mode == "hybrid":
+            for row, rrf_score, _sim in db.rrf_fuse(fts_rows, sem_pairs, limit):
+                results.append(
+                    BlockResult(
+                        **db.block_row_to_dict(row),
+                        score_type="hybrid",
+                        score=round(rrf_score, 6),
+                    )
+                )
+        elif mode == "semantic":
+            for row, similarity in sem_pairs[:limit]:
+                results.append(_row_to_result(row, "semantic", similarity=similarity))
+        else:  # fts
+            for row in fts_rows[:limit]:
+                results.append(_row_to_result(row, "fts"))
+
         SEARCH_REQUEST_SECONDS.labels(mode=mode).observe(time.monotonic() - t0)
-        return SearchResponse(query=q, results=results[:limit], total=len(results))
+        return SearchResponse(query=q, results=results, total=len(results))
     finally:
         conn.close()
 
