@@ -351,6 +351,58 @@ def test_build_synthesis_prompt_missing_user_context():
     assert "_user_context.md" in prompt
 
 
+def test_load_intentions_missing(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _load_intentions
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    assert _load_intentions(config) == ""
+
+
+def test_load_intentions_present(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _load_intentions
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    intent = "This week: ship the digest, call my parents.\n"
+    (config.wiki_dir / "_intentions.md").write_text(intent, encoding="utf-8")
+    assert _load_intentions(config) == intent.strip()
+
+
+def test_build_synthesis_prompt_injects_intentions():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "user_context": "",
+        "intentions": "This week: ship the digest, call my parents.",
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "Intention vs. attention" in prompt
+    assert "call my parents" in prompt
+
+
+def test_build_synthesis_prompt_missing_intentions():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "user_context": "",
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "_intentions.md" in prompt
+
+
 def test_gather_digest_data_splits_new_vs_carried_forward(tmp_path):
     """_gather_digest_data sorts open tasks into this_period vs carried_forward."""
     from dendr.config import Config

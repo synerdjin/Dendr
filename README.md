@@ -145,6 +145,7 @@ Vault/                          (iCloud-synced)
     digests/YYYY-Www.md         archived prior digests (re-fed to Claude)
     _digest_prompt.md           Claude synthesis input
     _user_context.md            stable user background for Claude
+    _intentions.md              per-period stated intentions (drift lens)
 
 %LOCALAPPDATA%\Dendr\           (PC-only, never synced)
   state.sqlite                  blocks + FTS5 + vector search
