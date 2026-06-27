@@ -16,6 +16,12 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 # Install (editable)
 pip install -e .
 
+# Update a local install after pulling changes
+# (git pull + refresh deps + verify models + restart the launchd daemon).
+# Editable install means pure-Python changes need only `git pull`; this
+# script also covers new deps, model-manifest changes, and the long-lived daemon.
+scripts/update.sh
+
 # Lint & format (run before pushing)
 ruff check --fix src/ tests/           # auto-fixes unused imports (F401 only)
 ruff format src/ tests/                # apply formatting
@@ -35,7 +41,6 @@ dendr mcp                             # MCP server (stdio) for Claude clients; n
 dendr stats
 dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
-dendr digest --review                 # long-horizon health-check meta-review prompt
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
 

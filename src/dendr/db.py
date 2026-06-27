@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import CHECKBOX_OPEN, COMPLETION_OPEN, Block
+from dendr.models import CHECKBOX_OPEN, COMPLETION_OPEN, SOURCE_AUTO, Block
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +354,7 @@ def insert_task_event(
     event_type: str,
     source_date: str,
     reason: str | None = None,
-    source: str = "auto",
+    source: str = SOURCE_AUTO,
 ) -> None:
     """Record a task lifecycle event."""
     conn.execute(

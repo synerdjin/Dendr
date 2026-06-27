@@ -1,4 +1,4 @@
-"""Local-inference surface: embeddings (Nomic)."""
+"""Local-inference surface: embeddings (EmbeddingGemma)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import numpy as np
 
 from dendr.config import Config
 from dendr.metrics import (
-    INFERENCE_SECONDS,
+    EMBED_SECONDS,
     MODEL_LOAD_SECONDS,
     MODEL_LOADED,
 )
@@ -164,9 +164,7 @@ class LLMClient:
         prompt = _format_for_embedding(text, kind, self.config.models.embedding_model)
         t0 = time.monotonic()
         result = model.embed(prompt)
-        INFERENCE_SECONDS.labels(model_role="embedding", task="embed").observe(
-            time.monotonic() - t0
-        )
+        EMBED_SECONDS.labels(mode="single").observe(time.monotonic() - t0)
         if isinstance(result[0], list):
             vec = np.array(result[0], dtype=np.float32)
         else:
@@ -184,9 +182,7 @@ class LLMClient:
         ]
         t0 = time.monotonic()
         results = model.embed(prompts)
-        INFERENCE_SECONDS.labels(model_role="embedding", task="embed_batch").observe(
-            time.monotonic() - t0
-        )
+        EMBED_SECONDS.labels(mode="batch").observe(time.monotonic() - t0)
         out = []
         for r in results:
             if isinstance(r, list):
