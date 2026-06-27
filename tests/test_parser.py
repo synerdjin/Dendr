@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dendr.models import CHECKBOX_CLOSED, CHECKBOX_NONE, CHECKBOX_OPEN
 from dendr.parser import (
+    close_task_in_source,
     get_file_hash,
     inject_block_ids,
     parse_closures,
@@ -153,6 +154,20 @@ def test_checkbox_state_none_for_prose():
         assert blocks[0].checkbox_state == CHECKBOX_NONE
 
 
+def test_cancelled_checkbox_parses_as_none():
+    # Contract relied on by the abandoned write-back: `- [-]` (Tasks "cancelled")
+    # is NOT a recognised checkbox, so re-parse yields checkbox_state=none and
+    # logs no transition; completion_status='abandoned' stays authoritative.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as f:
+        f.write("- [-] abandoned task ^dendr-cancel\n")
+        f.flush()
+        blocks = parse_daily_note(Path(f.name))
+        assert len(blocks) == 1
+        assert blocks[0].checkbox_state == CHECKBOX_NONE
+
+
 # ── Closure markers ────────────────────────────────────────────────
 
 
@@ -243,3 +258,83 @@ def test_parse_closures_missing_status_defaults_to_checkbox():
     text_checked = "- [x] **B** <!-- closure:dendr-r -->"
     assert parse_closures(text_unchecked)[0].status == "open"
     assert parse_closures(text_checked)[0].status == "done"
+
+
+# ── close_task_in_source ──────────────────────────────────────────────
+
+
+def _write_note(text: str) -> Path:
+    f = tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w")
+    f.write(text)
+    f.close()
+    return Path(f.name)
+
+
+def test_close_task_in_source_marks_done_with_date():
+    note = _write_note("- [ ] finish the report ^dendr-aaa\n")
+    assert close_task_in_source(note, "dendr-aaa", "x", "2026-06-26") is True
+    assert note.read_text() == "- [x] finish the report ✅ 2026-06-26 ^dendr-aaa\n"
+
+
+def test_close_task_in_source_cancelled_uses_dash_and_cross():
+    note = _write_note("- [ ] maybe later ^dendr-bbb\n")
+    assert close_task_in_source(note, "dendr-bbb", "-", "2026-06-26") is True
+    assert note.read_text() == "- [-] maybe later ❌ 2026-06-26 ^dendr-bbb\n"
+
+
+def test_close_task_in_source_preserves_indent_and_neighbors():
+    note = _write_note(
+        "# Tasks\n\n    - [ ] nested item ^dendr-ccc\n- [ ] other ^dendr-ddd\n"
+    )
+    assert close_task_in_source(note, "dendr-ccc", "x", "2026-06-26") is True
+    lines = note.read_text().split("\n")
+    assert lines[2] == "    - [x] nested item ✅ 2026-06-26 ^dendr-ccc"
+    assert lines[3] == "- [ ] other ^dendr-ddd"  # untouched
+
+
+def test_close_task_in_source_idempotent_when_already_closed():
+    note = _write_note("- [x] done ✅ 2026-06-26 ^dendr-eee\n")
+    assert close_task_in_source(note, "dendr-eee", "x", "2026-06-26") is False
+
+
+def test_close_task_in_source_refreshes_stale_date():
+    note = _write_note("- [ ] redo ✅ 2025-01-01 ^dendr-fff\n")
+    assert close_task_in_source(note, "dendr-fff", "x", "2026-06-26") is True
+    assert note.read_text() == "- [x] redo ✅ 2026-06-26 ^dendr-fff\n"
+
+
+def test_close_task_in_source_missing_ref_returns_false():
+    note = _write_note("- [ ] no ref here\n")
+    assert close_task_in_source(note, "dendr-ghost", "x", "2026-06-26") is False
+
+
+def test_close_task_in_source_missing_file_returns_false():
+    assert (
+        close_task_in_source(Path("/no/such/file.md"), "dendr-x", "x", "2026-06-26")
+        is False
+    )
+
+
+def test_close_task_in_source_multiline_block_checkbox_above_ref():
+    note = _write_note("- [ ] multi line task\n  continued line ^dendr-hhh\n")
+    assert close_task_in_source(note, "dendr-hhh", "x", "2026-06-26") is True
+    lines = note.read_text().split("\n")
+    assert lines[0] == "- [x] multi line task ✅ 2026-06-26"
+    assert lines[1] == "  continued line ^dendr-hhh"
+
+
+def test_close_task_in_source_does_not_cross_block_boundary():
+    # The ref'd block is prose with no checkbox; the walk-up must stop at the
+    # blank line and NOT grab the unrelated task above.
+    note = _write_note("- [ ] unrelated task\n\njust a note ^dendr-iii\n")
+    assert close_task_in_source(note, "dendr-iii", "x", "2026-06-26") is False
+    assert note.read_text() == "- [ ] unrelated task\n\njust a note ^dendr-iii\n"
+
+
+def test_close_task_in_source_exact_block_id_match():
+    # A different block whose id is a suffix of another must not be matched.
+    note = _write_note("- [ ] a ^dendr-xwb\n- [ ] b ^dendr-wb\n")
+    assert close_task_in_source(note, "dendr-wb", "x", "2026-06-26") is True
+    lines = note.read_text().split("\n")
+    assert lines[0] == "- [ ] a ^dendr-xwb"  # untouched
+    assert lines[1] == "- [x] b ✅ 2026-06-26 ^dendr-wb"

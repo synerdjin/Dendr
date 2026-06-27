@@ -44,7 +44,12 @@ from dendr.models import (
     Block,
     QueueItem,
 )
-from dendr.parser import inject_block_ids, parse_closures, parse_daily_note
+from dendr.parser import (
+    close_task_in_source,
+    inject_block_ids,
+    parse_closures,
+    parse_daily_note,
+)
 from dendr.privacy import filter_blocks
 
 logger = logging.getLogger(__name__)
@@ -128,6 +133,10 @@ def _track_checkbox_transition(
         return
 
     if item.checkbox_state == CHECKBOX_CLOSED and old_state == CHECKBOX_OPEN:
+        # A digest closure already logged a user-sourced close and ticked the
+        # source checkbox; don't double-count that echo as an auto close.
+        if existing["completion_status"] in (COMPLETION_DONE, COMPLETION_ABANDONED):
+            return
         db.insert_task_event(
             conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
         )
@@ -243,6 +252,19 @@ _CLOSURE_DETAILS = {
     CLOSURE_STILL_LIVE: (COMPLETION_OPEN, REASON_REOPENED),
 }
 
+# Closures that also flip the checkbox in the source daily note, mapped to the
+# Markdown mark written there (Tasks plugin: `x` = done, `-` = cancelled).
+# Snoozed/still-live stay open in source, so they're absent here.
+#
+# Note: `-` is deliberately NOT in parser._CHECKBOX_RE, so a re-parsed `- [-]`
+# line reads as checkbox_state=none (no transition logged) while completion_status
+# stays 'abandoned' (authoritative). Done's `x` IS a checkbox mark, so its echo is
+# instead suppressed by the completion_status guard in _track_checkbox_transition.
+_SOURCE_WRITEBACK_MARK = {
+    CLOSURE_DONE: "x",
+    CLOSURE_ABANDONED: "-",
+}
+
 
 def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     """Apply closure markers from Wiki/digest.md to block rows.
@@ -294,6 +316,17 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
         )
         if event_type == EVENT_CLOSED:
             TASKS_CLOSED.labels(source="user").inc()
+        # Mirror the close back into the source daily note so the checkbox is
+        # actually ticked there (no more hunting for the task to close it).
+        mark = _SOURCE_WRITEBACK_MARK.get(closure.status)
+        source_file = row["source_file"]
+        if (
+            mark
+            and source_file
+            and close_task_in_source(Path(source_file), closure.block_id, mark, today)
+        ):
+            logger.info("Closed task %s in source %s", closure.block_id, source_file)
+
         applied += 1
 
     if applied > 0:
