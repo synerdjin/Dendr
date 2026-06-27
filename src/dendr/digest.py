@@ -79,7 +79,9 @@ def _render_task_review(tasks: list[dict]) -> str:
         - [ ] **first line of block text** — *written 3w ago* <!-- closure:BLOCK_ID status:open -->
 
     Users flip `[ ]` → `[x]`, or change `status:open` to `done`,
-    `abandoned`, `snoozed`, or `still-live`. The next ingest reconciles.
+    `abandoned`, `snoozed`, or `still-live`. The next ingest reconciles —
+    closing here (done/abandoned) also ticks the checkbox in the source
+    daily note, so there's no need to hunt the task down to close it.
     """
     by_bucket: dict[str, list[dict]] = {}
     for t in tasks:
@@ -91,7 +93,7 @@ def _render_task_review(tasks: list[dict]) -> str:
     lines.append(
         "*Flip `[ ]` to `[x]` to close, or edit `status:` to "
         "`done`, `abandoned`, `snoozed`, or `still-live`. "
-        "The next ingest will reconcile.*"
+        "The next ingest reconciles and ticks the source daily note for you.*"
     )
     lines.append("")
 

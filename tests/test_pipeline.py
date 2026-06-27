@@ -213,6 +213,81 @@ def test_reconcile_closures_noop_when_already_matches():
     assert applied == 0
 
 
+def test_reconcile_closures_writes_back_to_source():
+    """Closing a task in the digest ticks the checkbox in its daily note."""
+    config = _temp_vault()
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] ship it ^dendr-wb\n", encoding="utf-8")
+    (config.wiki_dir / "digest.md").write_text(
+        "- [x] **Ship it** <!-- closure:dendr-wb status:open -->",
+        encoding="utf-8",
+    )
+
+    conn = _temp_db()
+    block = _make_task_block("dendr-wb")
+    block.source_file = str(note)
+    upsert_block(conn, block, "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    assert get_block(conn, "dendr-wb")["completion_status"] == "done"
+
+    text = note.read_text()
+    assert text.startswith("- [x] ship it ✅ ")
+    assert text.rstrip().endswith("^dendr-wb")
+
+
+def test_reconcile_closures_abandoned_cancels_in_source():
+    config = _temp_vault()
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] drop it ^dendr-ab\n", encoding="utf-8")
+    (config.wiki_dir / "digest.md").write_text(
+        "- [ ] **Drop it** <!-- closure:dendr-ab status:abandoned -->",
+        encoding="utf-8",
+    )
+
+    conn = _temp_db()
+    block = _make_task_block("dendr-ab")
+    block.source_file = str(note)
+    upsert_block(conn, block, "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    assert note.read_text().startswith("- [-] drop it ❌ ")
+
+
+def test_reconcile_closures_snoozed_leaves_source_open():
+    config = _temp_vault()
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] later ^dendr-sn\n", encoding="utf-8")
+    (config.wiki_dir / "digest.md").write_text(
+        "- [ ] **Later** <!-- closure:dendr-sn status:snoozed -->",
+        encoding="utf-8",
+    )
+
+    conn = _temp_db()
+    block = _make_task_block("dendr-sn")
+    block.source_file = str(note)
+    upsert_block(conn, block, "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    assert note.read_text() == "- [ ] later ^dendr-sn\n"  # untouched
+
+
+def test_transition_suppressed_when_user_already_closed():
+    """The source-flip echo from a digest close isn't double-logged as auto."""
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_OPEN), SOURCE_DATE)
+    update_completion_status(conn, "t1", "done")
+    existing = get_block(conn, "t1")
+
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_CLOSED), SOURCE_DATE, existing
+    )
+    rows = conn.execute(
+        "SELECT event_type FROM task_events WHERE block_id = ?", ("t1",)
+    ).fetchall()
+    assert rows == []
+
+
 def test_reconcile_closures_no_digest_file():
     config = _temp_vault(digest_text=None)
     conn = _temp_db()

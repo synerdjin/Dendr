@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workflow rule
+
+Every time you change code in this repo, run `/simplify` and then `/code-review` on the diff before considering the work done, and apply any warranted fixes they surface.
+
 ## What is Dendr
 
 A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly and does classification, affect reading, and narrative synthesis in one pass. Local models handle only embeddings (for semantic search).
@@ -122,7 +126,7 @@ Prometheus + Grafana stack via `docker compose up prometheus grafana gpu-exporte
 
 - **Raw-text first**: The `blocks` table stores the block's original Markdown verbatim. All search, digest, and synthesis work reads raw text directly; Claude does classification and affect reading on the fly
 - **Checkbox-driven task lifecycle**: Tasks are identified by `- [ ]` / `- [x]` checkboxes. Checkbox transitions log `task_events` (source='auto'). User-driven closures via the digest review flow log events with source='user' and set `completion_status`
-- **Closure review loop**: Digest `## Task Review` section lists open tasks >1 week old with checkbox + `<!-- closure:<block_id> status:open -->` markers. User edits the checkbox or status value in `digest.md`; on next ingest, `reconcile_closures` parses the markers and writes `completion_status` + user-sourced task events. User closures take precedence — re-parsing the source file doesn't clobber them, because the upsert preserves `completion_status`
+- **Closure review loop**: Digest `## Task Review` section lists open tasks >1 week old with checkbox + `<!-- closure:<block_id> status:open -->` markers. User edits the checkbox or status value in `digest.md`; on next ingest, `reconcile_closures` parses the markers and writes `completion_status` + user-sourced task events. User closures take precedence — re-parsing the source file doesn't clobber them, because the upsert preserves `completion_status`. **Source write-back**: closing a task `done`/`abandoned` in the digest also flips the checkbox in the original Daily note via `parser.close_task_in_source` — `- [x]` + `✅ <date>` (done) or `- [-]` + `❌ <date>` (cancelled), Tasks-plugin format — so the user never has to hunt down the source line. `snoozed`/`still-live` leave source untouched. The write-back's re-parse echo (open→closed) is suppressed in `_track_checkbox_transition` when `completion_status` is already a user-set terminal state, so the close isn't double-logged
 - **Claude-at-synthesis**: The `--claude` digest path writes a prompt to `Wiki/_digest_prompt.md` containing raw blocks + minimal structural metadata (block_id, source_date, age_days, checkbox_state, completion_status) + user context + the last 4 archived digests. Claude does the classification, clustering, affect reading, and narrative synthesis at read time. The prompt framing is a retrospective-coach with anti-sycophancy / safety / rumination-vs-insight rules; the full template lives in `src/dendr/templates/synthesis_prompt.md`
 - **Prior-digest archive**: Before each `--claude` run overwrites `Wiki/digest.md`, the old content is copied to `Wiki/digests/{ISO-week}.md`. The next run loads the last `PRIOR_DIGEST_COUNT` archives into the synthesis payload so Claude can do a Review step — which experiments / questions / open loops from prior weeks are still live, which quietly disappeared. Archives are re-ingested verbatim, so manual user edits to `Wiki/digests/*.md` DO influence future Claude output
 - **Feedback loop**: Digest sections include feedback comment blocks. User ratings are stored in `feedback_scores` and surfaced via `get_section_effectiveness()` so Claude can weight sections by past usefulness

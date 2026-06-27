@@ -234,6 +234,118 @@ def get_file_hash(file_path: Path) -> str:
     return hashlib.sha256(file_path.read_bytes()).hexdigest()[:16]
 
 
+# ── Source-checkbox write-back (digest closure → daily note) ──────────
+#
+# When a user closes a task in the digest review flow, we mirror the close
+# back into the source daily note so the checkbox is actually ticked there.
+# Marks follow the Tasks plugin: `x` (done) and `-` (cancelled), each with a
+# date signifier — ✅ <date> for done, ❌ <date> for cancelled.
+
+# A source list-item checkbox at any indent. `-` (cancelled) included so an
+# already-cancelled line is recognised and left idempotent.
+_SOURCE_CHECKBOX_RE = re.compile(r"^(?P<indent>\s*)-\s*\[(?P<mark>[ xX-])\]")
+
+# Tasks-plugin date signifiers we manage: ✅ <date> (done), ❌ <date> (cancelled).
+_TASKS_DATE_SIG_RE = re.compile(r"\s*[✅❌]\s*\d{4}-\d{2}-\d{2}")
+
+# Mark → Tasks-plugin date emoji.
+_TASKS_DATE_EMOJI = {"x": "✅", "-": "❌"}
+
+
+def _rewrite_checkbox_line(
+    line: str, mark: str, completion_date: str | None
+) -> str | None:
+    """Return `line` with its checkbox set to `mark` + a refreshed date sig.
+
+    Returns None if the line carries no checkbox.
+    """
+    if not _SOURCE_CHECKBOX_RE.match(line):
+        return None
+
+    # Peel off a trailing block ref so the date signifier lands before it
+    # (Obsidian requires `^id` at the very end of the line).
+    ref = ""
+    ref_m = _BLOCK_REF_RE.search(line)
+    if ref_m:
+        ref = line[ref_m.start() :]
+        line = line[: ref_m.start()]
+
+    # Drop any stale Tasks date signifier; we re-add the canonical one.
+    line = _TASKS_DATE_SIG_RE.sub("", line).rstrip()
+
+    # Flip the checkbox mark, preserving indent and the trailing task text.
+    line = _SOURCE_CHECKBOX_RE.sub(
+        lambda m: f"{m.group('indent')}- [{mark}]", line, count=1
+    )
+
+    emoji = _TASKS_DATE_EMOJI.get(mark)
+    if completion_date and emoji:
+        line = f"{line} {emoji} {completion_date}"
+
+    return line + ref
+
+
+def close_task_in_source(
+    file_path: Path,
+    block_id: str,
+    mark: str,
+    completion_date: str | None = None,
+) -> bool:
+    """Flip the source checkbox for `block_id` to `mark` (`x` done / `-` cancelled).
+
+    Locates the line carrying the `^block_id` block ref, rewrites its
+    `- [ ]` checkbox to `- [mark]`, and (when `completion_date` is given)
+    appends the matching Tasks-plugin date signifier just before the trailing
+    block ref so both the Tasks plugin and Obsidian parse it.
+
+    Idempotent: a task already at the target state is left untouched.
+    Best-effort: a missing/unwritable file or absent ref returns False.
+    Returns True only if the file was modified.
+    """
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    lines = text.split("\n")
+
+    # The block ref is appended to the block's last line; the checkbox sits at
+    # the block's first line. Find the ref line (exact id match), then walk up.
+    ref_idx = next(
+        (
+            i
+            for i, ln in enumerate(lines)
+            if (m := _BLOCK_REF_RE.search(ln)) and m.group(1) == block_id
+        ),
+        None,
+    )
+    if ref_idx is None:
+        return False
+
+    # Walk up to the block's checkbox, stopping at the blank line that bounds
+    # the block so we never grab a neighbouring item's checkbox.
+    cb_idx = None
+    for i in range(ref_idx, -1, -1):
+        if not lines[i].strip():
+            break
+        if _SOURCE_CHECKBOX_RE.match(lines[i]):
+            cb_idx = i
+            break
+    if cb_idx is None:
+        return False
+
+    new_line = _rewrite_checkbox_line(lines[cb_idx], mark, completion_date)
+    if new_line is None or new_line == lines[cb_idx]:
+        return False
+
+    lines[cb_idx] = new_line
+    try:
+        file_path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 # ── Closure markers (digest review flow) ─────────────────────────────
 #
 # Closure lines look like:
