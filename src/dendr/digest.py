@@ -263,17 +263,36 @@ def load_prior_digests(config: Config, n: int = PRIOR_DIGEST_COUNT) -> list[dict
     return results
 
 
-def _load_user_context(config: Config) -> str:
-    """Read `Wiki/_user_context.md` if present — free-form markdown.
+def _read_wiki_markdown(config: Config, filename: str) -> str:
+    """Read a free-form markdown file from the Wiki dir, stripped.
 
-    Injected verbatim into the Claude synthesis prompt so the reviewer
-    has persistent background on role, life situation, active goals, and
-    stable constraints. Absent file returns empty string.
+    Absent file returns empty string. Backs the optional Claude-grounding
+    files (`_user_context.md`, `_intentions.md`) injected into the prompt.
     """
-    path = config.wiki_dir / "_user_context.md"
+    path = config.wiki_dir / filename
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8").strip()
+
+
+def _load_user_context(config: Config) -> str:
+    """Read `Wiki/_user_context.md` — stable identity and standing goals.
+
+    Injected verbatim into the Claude synthesis prompt so the reviewer
+    has persistent background on role, life situation, active goals, and
+    stable constraints.
+    """
+    return _read_wiki_markdown(config, "_user_context.md")
+
+
+def _load_intentions(config: Config) -> str:
+    """Read `Wiki/_intentions.md` — the user's *per-period* intentions.
+
+    Unlike `_user_context.md` (stable identity), this is what the user said
+    this week was about. Injected into the synthesis prompt so Claude can
+    judge drift between stated intention and where attention actually went.
+    """
+    return _read_wiki_markdown(config, "_intentions.md")
 
 
 def _block_to_dict(row: sqlite3.Row) -> dict:
@@ -312,6 +331,7 @@ def _gather_digest_data(
         "period_end": now.strftime("%Y-%m-%d"),
         "stats": db.get_stats(conn),
         "user_context": _load_user_context(config),
+        "intentions": _load_intentions(config),
         "this_period": {
             "blocks": period_blocks,
             "new_open_tasks": new_open_tasks,
@@ -339,9 +359,32 @@ def build_synthesis_prompt(data: dict) -> str:
             "goals, and stable constraints to give you better grounding.)*\n"
         )
 
+    intentions = (data.get("intentions") or "").strip()
+    if intentions:
+        intentions_section = (
+            "\n## What the user said this week was about\n\n"
+            "The user's stated intentions for this period, in their own words. "
+            "Judge `this_period.blocks` against these: where did attention "
+            "actually go versus where they said it would? Name the drift "
+            "plainly — but do not rubber-stamp the intention itself. If they "
+            "stated the same intention in prior weeks and never acted on it, "
+            "that is a pattern to surface, not a goal to validate.\n\n"
+            f"{intentions}\n"
+        )
+    else:
+        intentions_section = (
+            "\n## What the user said this week was about\n\n"
+            "*(No `Wiki/_intentions.md` file found. The user can create one at "
+            "the start of a period with a few lines on what they want this week "
+            "to be about, so you can judge drift between intention and "
+            "attention.)*\n"
+        )
+
     template = read_template("synthesis_prompt.md")
-    return template.replace("{context_section}", context_section).replace(
-        "{data_json}", data_json
+    return (
+        template.replace("{context_section}", context_section)
+        .replace("{intentions_section}", intentions_section)
+        .replace("{data_json}", data_json)
     )
 
 
