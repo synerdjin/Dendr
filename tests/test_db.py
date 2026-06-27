@@ -1,6 +1,7 @@
 """Tests for the database layer."""
 
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -202,8 +203,11 @@ def test_fts_no_stale_tokens_on_update():
 
 def test_feedback_scores():
     conn = _temp_db()
-    upsert_feedback_score(conn, "2026-04-03", "narrative", True, "good stuff")
-    upsert_feedback_score(conn, "2026-04-03", "open-loops", False, "")
+    # Use a date comfortably inside get_section_effectiveness's 12-week
+    # lookback window; a hardcoded date sitting on the boundary is flaky.
+    recent = (datetime.now() - timedelta(weeks=1)).isoformat()[:10]
+    upsert_feedback_score(conn, recent, "narrative", True, "good stuff")
+    upsert_feedback_score(conn, recent, "open-loops", False, "")
 
     scores = get_section_effectiveness(conn)
     assert scores["narrative"] == 1.0
