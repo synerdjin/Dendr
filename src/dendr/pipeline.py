@@ -14,7 +14,14 @@ import numpy as np
 from dendr import db, queue
 from dendr.config import Config
 from dendr.llm import LLMClient
-from dendr.metrics import BLOCKS_PROCESSED, INGEST_CYCLE_SECONDS
+from dendr.metrics import (
+    BLOCKS_ERROR,
+    BLOCKS_PROCESSED,
+    BLOCKS_PRIVATE,
+    EMBED_THROUGHPUT,
+    INGEST_CYCLE_SECONDS,
+    TASKS_CLOSED,
+)
 from dendr.models import (
     CHECKBOX_CLOSED,
     CHECKBOX_NONE,
@@ -78,6 +85,9 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
 def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
     """Tag privacy and enqueue dirty blocks."""
     filter_blocks(dirty_blocks)
+    private_count = sum(1 for b in dirty_blocks if b.private)
+    if private_count:
+        BLOCKS_PRIVATE.inc(private_count)
     for block in dirty_blocks:
         queue.enqueue(
             config,
@@ -121,6 +131,7 @@ def _track_checkbox_transition(
         db.insert_task_event(
             conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
         )
+        TASKS_CLOSED.labels(source="auto").inc()
     elif item.checkbox_state == CHECKBOX_OPEN and old_state == CHECKBOX_CLOSED:
         db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
 
@@ -160,7 +171,17 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
     if not claimed:
         return 0
 
+    embed_t0 = time.monotonic()
     embeddings = _embed_all(llm, claimed)
+    embed_elapsed = time.monotonic() - embed_t0
+    rate = len(claimed) / embed_elapsed if embed_elapsed > 0 else 0
+    EMBED_THROUGHPUT.set(rate)
+    logger.info(
+        "Embedded %d blocks in %.1fs (%.1f blocks/sec)",
+        len(claimed),
+        embed_elapsed,
+        rate,
+    )
 
     existing_rows = db.get_blocks(conn, [i.block_id for i in claimed])
     logger.info("Committing %d blocks", len(claimed))
@@ -205,6 +226,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         except Exception as e:
             logger.error("Failed to process block %s: %s", item.block_id, e)
             queue.mark_dead(config, item.block_id)
+            BLOCKS_ERROR.inc()
             continue
 
     if processed > 0:
@@ -270,6 +292,8 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
             reason=event_reason,
             source=SOURCE_USER,
         )
+        if event_type == EVENT_CLOSED:
+            TASKS_CLOSED.labels(source="user").inc()
         applied += 1
 
     if applied > 0:
@@ -292,13 +316,23 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
     logger.info("Found %d dirty blocks, queued %d", len(dirty), queued)
 
     processed = process_queue(config, conn, llm)
-    logger.info("Processed %d blocks", processed)
 
-    INGEST_CYCLE_SECONDS.observe(time.monotonic() - t0)
+    elapsed = time.monotonic() - t0
+    rate = processed / elapsed if elapsed > 0 else 0
+    logger.info(
+        "Processed %d blocks in %.1fs (%.1f blocks/sec)",
+        processed,
+        elapsed,
+        rate,
+    )
+
+    INGEST_CYCLE_SECONDS.observe(elapsed)
 
     return {
         "closures_applied": closures_applied,
         "dirty_blocks": len(dirty),
         "queued": queued,
         "processed": processed,
+        "elapsed_sec": round(elapsed, 1),
+        "blocks_per_sec": round(rate, 1),
     }

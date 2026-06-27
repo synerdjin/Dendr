@@ -13,6 +13,7 @@ import time
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from dendr import queue
 from dendr.config import Config
 from dendr.db import connect, init_schema
 from dendr.llm import LLMClient
@@ -145,6 +146,9 @@ def run_daemon(config: Config) -> None:
                     stats = run_ingest(config, conn, llm)
                     logger.info("Poll ingest complete: %s", stats)
                     conn.close()
+                    removed = queue.cleanup_done(config)
+                    if removed:
+                        logger.info("Pruned %d old done-queue items", removed)
                 except Exception as e:
                     logger.error("Poll ingest failed: %s", e, exc_info=True)
     except KeyboardInterrupt:

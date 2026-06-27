@@ -24,25 +24,24 @@ MODEL_LOADED = Gauge(
 
 MODEL_LOAD_SECONDS = Histogram(
     "dendr_model_load_seconds",
-    "Time to load a model into GPU memory",
+    "Time to load a model into memory",
     ["model_role"],
     buckets=(1, 5, 10, 30, 60, 120, 300),
 )
 
 # ---------------------------------------------------------------------------
-# Inference
+# Embedding
 # ---------------------------------------------------------------------------
-INFERENCE_SECONDS = Histogram(
-    "dendr_inference_seconds",
-    "LLM inference duration in seconds",
-    ["model_role", "task"],
-    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+EMBED_SECONDS = Histogram(
+    "dendr_embed_seconds",
+    "Embedding call duration in seconds",
+    ["mode"],  # "single" | "batch"
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120),
 )
 
-INFERENCE_TOKENS = Counter(
-    "dendr_inference_tokens_total",
-    "Total tokens processed",
-    ["model_role", "direction"],
+EMBED_THROUGHPUT = Gauge(
+    "dendr_embed_blocks_per_sec",
+    "Embedding throughput from the most recent ingest batch",
 )
 
 # ---------------------------------------------------------------------------
@@ -60,13 +59,37 @@ QUEUE_PROCESSING = Gauge(
 
 BLOCKS_PROCESSED = Counter(
     "dendr_blocks_processed_total",
-    "Total blocks successfully processed",
+    "Total blocks successfully committed",
+)
+
+BLOCKS_PRIVATE = Counter(
+    "dendr_blocks_private_total",
+    "Total blocks tagged as private by the privacy filter",
+)
+
+BLOCKS_ERROR = Counter(
+    "dendr_blocks_error_total",
+    "Total blocks that failed to embed or commit",
 )
 
 INGEST_CYCLE_SECONDS = Histogram(
     "dendr_ingest_cycle_seconds",
     "Duration of a full ingest cycle",
     buckets=(1, 5, 10, 30, 60, 120, 300, 600),
+)
+
+# ---------------------------------------------------------------------------
+# Task lifecycle
+# ---------------------------------------------------------------------------
+OPEN_TASKS = Gauge(
+    "dendr_open_tasks",
+    "Number of currently open checkbox tasks",
+)
+
+TASKS_CLOSED = Counter(
+    "dendr_tasks_closed_total",
+    "Total task closure events recorded",
+    ["source"],  # "auto" (checkbox flip) | "user" (digest review)
 )
 
 # ---------------------------------------------------------------------------
@@ -87,6 +110,14 @@ BLOCKS_TOTAL = Gauge(
     "Total blocks in the knowledge base",
 )
 
+# ---------------------------------------------------------------------------
+# Digest
+# ---------------------------------------------------------------------------
+DIGEST_RUNS = Counter(
+    "dendr_digest_runs_total",
+    "Total digest generation runs",
+    ["mode"],  # "local" | "claude"
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,5 +151,6 @@ def collect_db_metrics(conn) -> None:
 
         stats = db.get_stats(conn)
         BLOCKS_TOTAL.set(stats.get("blocks", 0))
+        OPEN_TASKS.set(stats.get("open_tasks", 0))
     except Exception:
         logger.debug("Failed to collect DB metrics", exc_info=True)

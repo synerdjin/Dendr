@@ -323,8 +323,11 @@ def digest(data_dir: str | None, vault: str | None, weeks: int, claude: bool) ->
     conn = connect(config.db_path)
     init_schema(conn)
 
+    from dendr.metrics import DIGEST_RUNS
+
     path = generate_digest(config, conn, weeks=weeks, use_claude=claude)
     conn.close()
+    DIGEST_RUNS.labels(mode="claude" if claude else "local").inc()
 
     click.echo(f"Digest written to: {path}")
     if claude:
