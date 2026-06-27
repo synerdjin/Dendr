@@ -316,7 +316,6 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
         )
         if event_type == EVENT_CLOSED:
             TASKS_CLOSED.labels(source="user").inc()
-
         # Mirror the close back into the source daily note so the checkbox is
         # actually ticked there (no more hunting for the task to close it).
         mark = _SOURCE_WRITEBACK_MARK.get(closure.status)
