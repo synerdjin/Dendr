@@ -1,7 +1,7 @@
 """Weekly digest generator — raw-text context assembly for Claude synthesis.
 
 The synthesis payload splits by time:
-- `this_period`     — non-private blocks written in the digest window
+- `this_period`     — blocks written in the digest window
 - `carried_forward` — open tasks from BEFORE the window (still unresolved)
 
 Persistent user context (`Wiki/_user_context.md`) is injected into the prompt.

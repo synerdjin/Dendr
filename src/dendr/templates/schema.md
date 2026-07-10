@@ -1,6 +1,6 @@
 ---
 type: schema
-version: "3.0"
+version: "3.1"
 ---
 
 # Dendr Block Store Schema
@@ -17,13 +17,3 @@ reading, and clustering itself.
 - `checkbox_state` — `open` (`- [ ]`), `closed` (`- [x]`), or `none`
 - `completion_status` — set only when the user closes a task via the digest
   review flow (`done` | `abandoned` | `snoozed` | `open`); `null` otherwise
-- `private` — true if the block contains secrets or a `#dendr-private` tag
-
-## Privacy
-
-- Blocks tagged `#dendr-private`, `#private`, or `#redact` are never sent to
-  Claude
-- Blocks matching secret patterns (API keys, passwords) are auto-tagged
-  private
-- Private blocks are stored locally for search but excluded from Claude
-  payloads

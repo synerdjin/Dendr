@@ -9,7 +9,7 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 ```
 Daily Notes (you write here)
     ↓ watcher detects changes
-    ↓ block-level parsing + privacy filter
+    ↓ block-level parsing
     ↓ embed raw block text (EmbeddingGemma)
     ↓ commit to SQLite (blocks + FTS + vector index)
     ↓ log task_events on checkbox transitions
@@ -160,17 +160,12 @@ Each block is stored with:
 - `source_date` — date from the daily note filename
 - `checkbox_state` — `open` (`- [ ]`), `closed` (`- [x]`), or `none`
 - `completion_status` — only set when the user closes a task via the digest review flow
-- `private` — true if the privacy filter flagged the block
 
 Claude reads raw text directly during digest synthesis; there is no pre-computed annotation layer.
 
 ### Task lifecycle
 
 Tasks are identified by Markdown checkboxes. Checkbox transitions (open → closed) are logged as `task_events` with source='auto'. When you close a task through the digest review flow, `completion_status` is set and the event is logged with source='user'. User closures take precedence — re-parsing the source file doesn't clobber them.
-
-### Privacy
-
-Blocks containing API keys, passwords, SSNs, or tagged with `#dendr-private` / `#private` / `#redact` are stored locally but **never sent to Claude**.
 
 ## Observability
 

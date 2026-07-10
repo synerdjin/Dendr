@@ -298,11 +298,10 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
       "id": 18,
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "title": "Open Tasks / Private Blocks",
+      "title": "Open Tasks",
       "type": "stat",
       "targets": [
-        { "expr": "dendr_open_tasks", "legendFormat": "open tasks", "refId": "A" },
-        { "expr": "dendr_blocks_private_total", "legendFormat": "private blocks", "refId": "B" }
+        { "expr": "dendr_open_tasks", "legendFormat": "open tasks", "refId": "A" }
       ]
     },
 
