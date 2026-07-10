@@ -16,9 +16,9 @@ help: ## Show this list
 ## --- Setup -----------------------------------------------------------------
 
 .PHONY: install
-install: ## Create the venv (if missing) and install Dendr into it, editable
+install: ## Create the venv (if missing) and install Dendr + dev tools into it, editable
 	@test -x "$(PYTHON)" || python3 -m venv "$(DENDR_VENV)"
-	$(PIP) install -e . --quiet
+	$(PIP) install -e ".[dev]" --quiet
 
 .PHONY: update
 update: ## Pull latest, refresh deps, verify models, restart the login daemon

@@ -40,8 +40,10 @@ else
 fi
 
 # --- 2. Reinstall (picks up new deps / entry points; cheap if unchanged) -----
-echo "==> pip install -e . (refresh dependencies)"
-"$PIP" install -e . --quiet
+# Installs the dev extra too (ruff, pytest) since this venv also backs
+# `make check` — same venv, dev and runtime aren't split for a single-user tool.
+echo "==> pip install -e .[dev] (refresh dependencies)"
+"$PIP" install -e ".[dev]" --quiet
 
 # --- 3. Verify models; pull if the manifest changed --------------------------
 echo "==> dendr models verify"

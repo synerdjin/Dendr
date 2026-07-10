@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.2"]
+dev = ["ruff>=0.15", "pytest>=9.0"]
 
 [project.scripts]
 dendr = "dendr.cli:main"

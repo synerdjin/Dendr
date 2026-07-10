@@ -37,8 +37,7 @@ actually use the GPU.
 git clone https://github.com/synerdjin/Dendr.git
 cd Dendr
 
-python3 -m venv ~/.dendr-venv
-~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal
+make install    # creates ~/.dendr-venv, installs Dendr + dev tools (builds llama-cpp-python with Metal)
 ~/.dendr-venv/bin/dendr init /path/to/vault
 ~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
 
