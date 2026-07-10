@@ -18,8 +18,10 @@ Wiki/digest.md (you read here, on any device)
 
 ## Requirements
 
+Dendr targets Apple Silicon Macs — this is the only platform it's built and run against.
+
+- macOS on Apple Silicon (embeddings run on the Metal GPU via `llama-cpp-python`)
 - Python 3.11+
-- A GPU for embeddings — **NVIDIA** (6GB+ VRAM, via CUDA) **or Apple Silicon** (via Metal). CPU-only works but is slower.
 - Local model weights (see [Model Setup](#model-setup))
 - Obsidian vault synced via iCloud (or any sync)
 
@@ -91,25 +93,17 @@ dendr models lock    # pin hashes for reproducibility
 |------|-------|------|---------|
 | Embeddings | [embeddinggemma-300m QAT Q8_0](https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
-Models are stored in `%LOCALAPPDATA%\Dendr\models\` (Windows) or `~/.local/share/dendr/models/` (macOS/Linux). Only one model is loaded in VRAM at a time.
+Models are stored in `~/.local/share/dendr/models/`. Only one model is loaded in VRAM at a time.
 
-## Running it: native (macOS) vs Docker (Linux/NVIDIA)
+## Running it
 
-Pick the path that matches your hardware — they are **not** interchangeable.
-
-### Native — recommended on macOS / Apple Silicon
-
-The bundled Docker image is built on `nvidia/cuda` and reserves NVIDIA GPUs, so it
-**cannot use the Apple Metal GPU** — Docker Desktop on macOS runs a Linux VM with no
-Metal passthrough, which would silently fall back to CPU-only inference. Running
-natively builds `llama-cpp-python` with Metal, so embeddings actually use the GPU.
-Native also gives the file watcher real macOS FSEvents (cross-VM file watching into a
-bind-mounted iCloud folder is unreliable).
+Runs natively — no containers. This gives the file watcher real macOS FSEvents and
+lets `llama-cpp-python` build against Metal so embeddings actually use the GPU.
 
 ```bash
 # Use a dedicated venv so the autostart agent has a stable interpreter to pin.
 python3 -m venv ~/.dendr-venv
-~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal on Apple Silicon
+~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal
 ~/.dendr-venv/bin/dendr init /path/to/vault
 ~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
 
@@ -117,19 +111,24 @@ python3 -m venv ~/.dendr-venv
 ~/.dendr-venv/bin/dendr autostart install
 ```
 
-`dendr serve` still exposes Prometheus metrics at `localhost:7777/metrics`; run
-Prometheus/Grafana via Homebrew if you want dashboards.
+## Regular tasks
 
-### Docker — for a Linux box with an NVIDIA GPU
+A `Makefile` wraps the commands above (and `scripts/update.sh`) around the
+`~/.dendr-venv` venv, so day-to-day operation doesn't require typing the venv path
+each time:
 
 ```bash
-docker compose up -d        # daemon + search server + Prometheus/Grafana monitoring
-curl http://localhost:7777/stats
+make help          # list every target
+make update        # git pull + refresh deps + verify models + restart the daemon
+make ingest         # one ingest cycle
+make digest         # weekly digest + Claude synthesis prompt
+make stats          # knowledge base statistics
+make serve          # search server on :7777
+make check          # lint + format-check + test — same as CI, run before pushing
 ```
 
-Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-for GPU passthrough. This is the right choice for a headless Linux/NVIDIA deployment,
-not for a Mac.
+Override the venv location with `make DENDR_VENV=~/other-venv <target>` if you're not
+using the default.
 
 ## Architecture
 
@@ -147,7 +146,7 @@ Vault/                          (iCloud-synced)
     _user_context.md            stable user background for Claude
     _intentions.md              per-period stated intentions (drift lens)
 
-%LOCALAPPDATA%\Dendr\           (PC-only, never synced)
+~/.local/share/dendr/           (local only, never synced)
   state.sqlite                  blocks + FTS5 + vector search
   queue/                        two-phase commit processing queue
   models/                       GGUF model weights
@@ -167,26 +166,7 @@ Claude reads raw text directly during digest synthesis; there is no pre-computed
 
 Tasks are identified by Markdown checkboxes. Checkbox transitions (open → closed) are logged as `task_events` with source='auto'. When you close a task through the digest review flow, `completion_status` is set and the event is logged with source='user'. User closures take precedence — re-parsing the source file doesn't clobber them.
 
-## Observability
-
-Dendr includes a Prometheus + Grafana monitoring stack:
-
-```bash
-docker compose up -d prometheus grafana gpu-exporter
-# Grafana:    http://localhost:3000
-# Prometheus: http://localhost:9090
-```
-
-The daemon exposes metrics on `localhost:9100/metrics` and the search server on `localhost:7777/metrics`.
-
-| Category | Metrics |
-|----------|---------|
-| **Models** | Which model is loaded, load time, inference latency, tokens/sec |
-| **Pipeline** | Blocks processed/hour, ingest cycle duration, queue depth |
-| **Search** | Request latency by mode (FTS/semantic/hybrid) |
-| **GPU** | Utilization %, VRAM used/free, temperature, power draw |
-
-### Structured logging
+## Structured logging
 
 ```bash
 DENDR_LOG_JSON=1 dendr daemon

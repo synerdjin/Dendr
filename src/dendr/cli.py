@@ -28,7 +28,7 @@ from dendr import __version__
 
 
 class _JsonFormatter(logging.Formatter):
-    """Emit structured JSON log lines for Docker / log aggregation."""
+    """Emit structured JSON log lines for log aggregation."""
 
     def format(self, record: logging.LogRecord) -> str:
         entry = {
@@ -286,7 +286,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
 @click.option(
     "--host",
     default="127.0.0.1",
-    help="Bind address (use 0.0.0.0 for Docker)",
+    help="Bind address (use 0.0.0.0 to expose on the LAN)",
 )
 def serve(data_dir: str | None, vault: str | None, host: str) -> None:
     """Start the search HTTP server."""

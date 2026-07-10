@@ -108,45 +108,6 @@ jobs:
           cmd_options: "-a -j"
           allow_issue_writing: false
 
-  # ── Container scan ────────────────────────────────────────────────
-  container-scan:
-    name: Container Scan (Trivy)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build image
-        run: docker build -t dendr:scan . --no-cache
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: "dendr:scan"
-          format: "sarif"
-          output: "trivy.sarif"
-          severity: "CRITICAL,HIGH"
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy.sarif
-          category: trivy
-      - name: Trivy table output
-        if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: "dendr:scan"
-          format: "table"
-          severity: "CRITICAL,HIGH"
-
-  # ── Dockerfile lint ───────────────────────────────────────────────
-  dockerfile-lint:
-    name: Dockerfile Lint (Hadolint)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: Dockerfile
-
   # ── Secret detection ──────────────────────────────────────────────
   secrets:
     name: Secret Detection (Gitleaks)
