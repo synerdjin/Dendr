@@ -77,8 +77,8 @@ autostart-uninstall: ## Stop and remove the login agent
 ## --- Development ---------------------------------------------------------------
 
 .PHONY: test
-test: ## Run the test suite
-	$(PYTEST)
+test: ## Run the test suite (same invocation as CI)
+	$(PYTEST) tests/ -v
 
 .PHONY: lint
 lint: ## Lint (ruff check)
@@ -98,4 +98,4 @@ check: lint format-check test ## Everything CI + the CLAUDE.md workflow rule req
 .PHONY: clean
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache build dist *.egg-info src/*.egg-info
-	find . -name '__pycache__' -not -path './.venv/*' -not -path '$(DENDR_VENV)/*' -exec rm -rf {} +
+	find . -name '__pycache__' -not -path './.venv/*' -exec rm -rf {} +

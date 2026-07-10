@@ -27,36 +27,46 @@ Dendr targets Apple Silicon Macs — this is the only platform it's built and ru
 
 ## Install
 
+Runs natively — no containers. A dedicated venv (rather than the ambient
+`pip install -e .` into whatever Python happens to be active) gives the
+autostart agent a stable interpreter to pin, real macOS FSEvents for the file
+watcher, and lets `llama-cpp-python` build against Metal so embeddings
+actually use the GPU.
+
 ```bash
 git clone https://github.com/synerdjin/Dendr.git
 cd Dendr
-pip install -e .
+
+python3 -m venv ~/.dendr-venv
+~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal
+~/.dendr-venv/bin/dendr init /path/to/vault
+~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
+
+# Run the daemon on every login (writes a launchd LaunchAgent):
+~/.dendr-venv/bin/dendr autostart install
 ```
 
 ## Quick start
 
+The commands below assume `~/.dendr-venv/bin` is on your `PATH` (or prefix
+each with `~/.dendr-venv/bin/`):
+
 ```bash
-# 1. Initialize your vault
-dendr init /path/to/your/obsidian/vault
-
-# 2. Download models
-dendr models pull
-
-# 3. Run the daemon (watches Daily/ for changes)
-dendr daemon
-
-# 4. Or run a single ingest cycle
-dendr ingest
-
-# 5. Search your knowledge base
+# Search your knowledge base
 dendr search "machine learning"
 
-# 6. Generate a weekly digest
+# Generate a weekly digest
 dendr digest --claude
 
-# 7. Start the search HTTP server (for Claude Code integration)
+# Start the search HTTP server (for Claude Code integration)
 dendr serve
+
+# Run a single ingest cycle (the daemon from `autostart install` already does this on change)
+dendr ingest
 ```
+
+See [Regular tasks](#regular-tasks) below for the `Makefile` wrapping these
+(and more) so you don't have to type the venv path each time.
 
 ## CLI commands
 
@@ -94,22 +104,6 @@ dendr models lock    # pin hashes for reproducibility
 | Embeddings | [embeddinggemma-300m QAT Q8_0](https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF) | ~0.3 GB | 768d Matryoshka embeddings for semantic search |
 
 Models are stored in `~/.local/share/dendr/models/`. Only one model is loaded in VRAM at a time.
-
-## Running it
-
-Runs natively — no containers. This gives the file watcher real macOS FSEvents and
-lets `llama-cpp-python` build against Metal so embeddings actually use the GPU.
-
-```bash
-# Use a dedicated venv so the autostart agent has a stable interpreter to pin.
-python3 -m venv ~/.dendr-venv
-~/.dendr-venv/bin/pip install -e .          # builds llama-cpp-python with Metal
-~/.dendr-venv/bin/dendr init /path/to/vault
-~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
-
-# Run the daemon on every login (writes a launchd LaunchAgent):
-~/.dendr-venv/bin/dendr autostart install
-```
 
 ## Regular tasks
 
