@@ -29,15 +29,6 @@ PRIOR_DIGEST_CHAR_LIMIT = 4000
 
 logger = logging.getLogger(__name__)
 
-SECTION_IDS = [
-    "narrative",
-    "task-review",
-    "open-loops",
-    "activity",
-    "commitments-review",
-    "one-thing",
-]
-
 _FEEDBACK_RE = re.compile(
     r"<!--\s*feedback:(\S+)\s*\n(.*?)-->",
     re.DOTALL,

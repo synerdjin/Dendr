@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -11,11 +10,7 @@ from pathlib import Path
 
 
 def _default_data_dir() -> Path:
-    """Platform-appropriate local data directory (never synced to iCloud)."""
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        return Path(local) / "Dendr"
-    # macOS / Linux fallback
+    """Local data directory (never synced to iCloud)."""
     return Path.home() / ".local" / "share" / "dendr"
 
 

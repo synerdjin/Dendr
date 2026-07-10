@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio
+        run: pip install pytest
       - name: Install dendr
         run: pip install -e .
       - name: Run tests
