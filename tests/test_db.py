@@ -1,5 +1,6 @@
 """Tests for the database layer."""
 
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -161,8 +162,6 @@ def test_fts_finds_raw_text():
     assert rows[0]["block_id"] == "dendr-test-1"
 
 
-
-
 def test_fts_no_stale_tokens_on_update():
     """Regression: external-content FTS5 must not retain old tokens after update."""
     conn = _temp_db()
@@ -176,6 +175,58 @@ def test_fts_no_stale_tokens_on_update():
     )
     assert search_blocks_fts(conn, "zebra") == []
     assert len(search_blocks_fts(conn, "panda")) == 1
+
+
+# ── Schema migration ─────────────────────────────────────────────────
+
+
+def test_init_schema_drops_legacy_private_column():
+    """Pre-v5 DBs carried a `private` column; init_schema must drop it
+    without losing existing rows, and be safe to run more than once."""
+    f = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+    f.close()
+    path = Path(f.name)
+
+    raw = sqlite3.connect(str(path))
+    raw.execute(
+        """
+        CREATE TABLE blocks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            block_id          TEXT NOT NULL UNIQUE,
+            source_file       TEXT NOT NULL,
+            source_date       TEXT NOT NULL,
+            text              TEXT NOT NULL,
+            block_hash        TEXT NOT NULL,
+            checkbox_state    TEXT NOT NULL DEFAULT 'none',
+            completion_status TEXT,
+            private           INTEGER NOT NULL DEFAULT 0,
+            attachment_path   TEXT,
+            attachment_type   TEXT,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO blocks (block_id, source_file, source_date, text, "
+        "block_hash, private, created_at, updated_at) "
+        "VALUES ('b1', 'f', '2026-01-01', 'hi', 'h1', 1, 'now', 'now')"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = connect(path)
+    init_schema(conn)
+
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(blocks)")]
+    assert "private" not in cols
+
+    row = get_block(conn, "b1")
+    assert row["text"] == "hi"
+
+    init_schema(conn)  # must be idempotent
+    cols_again = [row[1] for row in conn.execute("PRAGMA table_info(blocks)")]
+    assert "private" not in cols_again
 
 
 # ── Feedback tests ────────────────────────────────────────────────────
