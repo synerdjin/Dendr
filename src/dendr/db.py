@@ -177,6 +177,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Drop the `private` column left over from the regex privacy filter
+    # (removed in v5). Requires SQLite >= 3.35; older versions just keep the
+    # (harmless, unread) column. Concurrent callers may race on the ALTER —
+    # the loser's OperationalError is swallowed at debug level, same as the
+    # blocks_vec migration above.
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
+        if "private" in cols:
+            conn.execute("ALTER TABLE blocks DROP COLUMN private")
+    except sqlite3.OperationalError as e:
+        logger.debug("private column drop skipped: %s", e)
+
 
 # ── Block operations ──────────────────────────────────────────────────
 

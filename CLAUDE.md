@@ -14,7 +14,7 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 >
 > **Upgrade note (v4):** the embedding model changed from nomic-embed-text-v1.5 to **embeddinggemma-300m** (still 768d, so `blocks_vec` is unchanged), and embeddings now carry task-instruction prompts. The vector space is different, so stored embeddings must be regenerated: `dendr models pull` then `rm state.sqlite && dendr ingest`. Hybrid search now fuses FTS + semantic with Reciprocal Rank Fusion instead of concatenation.
 >
-> **Upgrade note (v5):** the regex privacy filter (`privacy.py`, `#dendr-private`/`#private`/`#redact` tags, the `blocks.private` column) was removed — it added noise without meaningfully protecting anything a determined regex couldn't miss. All blocks are now stored, searched, and sent to Claude at digest time the same way. No rebuild needed: `state.sqlite` still works, the leftover `private` column is just ignored.
+> **Upgrade note (v5):** the regex privacy filter (`privacy.py`, `#dendr-private`/`#private`/`#redact` tags, the `blocks.private` column) was removed — it added noise without meaningfully protecting anything a determined regex couldn't miss. All blocks are now stored, searched, and sent to Claude at digest time the same way. No rebuild needed: `init_schema()` drops the leftover `private` column from `state.sqlite` automatically on next connect (SQLite ≥3.35; older versions just leave it in place, harmless either way).
 
 ## Commands
 
