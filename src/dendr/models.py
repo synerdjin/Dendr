@@ -59,7 +59,6 @@ class Block:
     is_attachment_ref: bool = False
     attachment_path: str | None = None
     attachment_type: str | None = None  # "pdf", "image", "audio"
-    private: bool = False
 
 
 @dataclass
@@ -71,7 +70,6 @@ class QueueItem:
     block_hash: str
     block_text: str
     checkbox_state: str = CHECKBOX_NONE
-    private: bool = False
     attachment_path: str | None = None
     attachment_type: str | None = None
     created_at: datetime = field(default_factory=datetime.now)

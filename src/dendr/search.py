@@ -70,7 +70,6 @@ def search(
     q: str = Query(..., min_length=1, description="Search query"),
     mode: str = Query("hybrid", description="fts, semantic, or hybrid"),
     limit: int = Query(20, ge=1, le=100),
-    include_private: bool = Query(False),
     min_score: float = Query(
         0.25,
         ge=0.0,
@@ -90,9 +89,7 @@ def search(
 
         fts_rows: list[sqlite3.Row] = []
         if mode in ("fts", "hybrid"):
-            fts_rows = db.search_blocks_fts(
-                conn, q, limit=pool, include_private=include_private
-            )
+            fts_rows = db.search_blocks_fts(conn, q, limit=pool)
 
         sem_pairs: list[tuple[sqlite3.Row, float]] = []
         if mode in ("semantic", "hybrid"):
@@ -103,7 +100,6 @@ def search(
                     conn,
                     query_emb,
                     limit=pool,
-                    include_private=include_private,
                     min_similarity=min_score,
                 )
             except Exception as e:

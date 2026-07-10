@@ -8,7 +8,6 @@ Answer questions using the user's raw daily-note blocks, with citations.
 
 ## Rules
 - Ground answers in the user's raw blocks with citations: `(from YYYY-MM-DD ^block-id)`
-- NEVER include private blocks in your answers
 - If you don't have enough information, say so honestly
 
 ## Vault path: {vault_path}

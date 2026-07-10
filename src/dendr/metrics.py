@@ -62,11 +62,6 @@ BLOCKS_PROCESSED = Counter(
     "Total blocks successfully committed",
 )
 
-BLOCKS_PRIVATE = Counter(
-    "dendr_blocks_private_total",
-    "Total blocks tagged as private by the privacy filter",
-)
-
 BLOCKS_ERROR = Counter(
     "dendr_blocks_error_total",
     "Total blocks that failed to embed or commit",

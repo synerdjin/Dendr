@@ -13,6 +13,8 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 > **Upgrade note (v3):** the text tagger and `block_annotations` schema were removed. If you have a pre-existing `state.sqlite`, rebuild it: `rm state.sqlite && dendr ingest`. The schema no longer contains `block_annotations`, `annotations_fts`, `annotations_vec`, or `block_state`. Claude now reads raw block text at digest synthesis time instead of pre-computed annotations.
 >
 > **Upgrade note (v4):** the embedding model changed from nomic-embed-text-v1.5 to **embeddinggemma-300m** (still 768d, so `blocks_vec` is unchanged), and embeddings now carry task-instruction prompts. The vector space is different, so stored embeddings must be regenerated: `dendr models pull` then `rm state.sqlite && dendr ingest`. Hybrid search now fuses FTS + semantic with Reciprocal Rank Fusion instead of concatenation.
+>
+> **Upgrade note (v5):** the regex privacy filter (`privacy.py`, `#dendr-private`/`#private`/`#redact` tags, the `blocks.private` column) was removed — it added noise without meaningfully protecting anything a determined regex couldn't miss. All blocks are now stored, searched, and sent to Claude at digest time the same way. No rebuild needed: `state.sqlite` still works, the leftover `private` column is just ignored.
 
 ## Commands
 
@@ -41,7 +43,6 @@ dendr ingest                          # single ingest cycle
 dendr search "query" --mode hybrid
 dendr serve                           # search server on :7777
 dendr serve --host 0.0.0.0            # bind all interfaces (Docker)
-dendr mcp                             # MCP server (stdio) for Claude clients; needs dendr[mcp]
 dendr stats
 dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
@@ -73,7 +74,6 @@ DENDR_LOG_JSON=1 dendr daemon
 
 ```
 Daily/*.md  →  parser (block_id, source_date, checkbox_state, hash)
-           →  privacy filter
            →  queue (pending/processing/done)
            →  embed raw text (EmbeddingGemma, model stays loaded)
            →  commit: blocks upsert + blocks_fts + blocks_vec
@@ -95,12 +95,11 @@ dendr digest --claude
 - **cli.py** — Click CLI entry point, registered as `dendr` console script
 - **config.py** — `Config` dataclass with all paths and `append_activity_log()`. Vault content lives in iCloud-synced `vault_path`; state/models/queue live in `data_dir` (`%LOCALAPPDATA%\Dendr` on Windows)
 - **parser.py** — Block-level parser for Obsidian daily notes. Assigns `^dendr-<ulid>` block IDs, hashes blocks for incremental processing, detects `- [ ]` / `- [x]` checkbox state
-- **privacy.py** — Regex-based filter that tags blocks containing secrets or `#dendr-private`/`#private`/`#redact` tags. Private blocks are stored locally but never sent to Claude
 - **queue.py** — File-based two-phase commit queue (pending → processing → done). On crash, items in processing/ are recovered on restart
 - **db.py** — SQLite with FTS5 and `sqlite-vec`. Tables: `blocks`, `blocks_fts`, `blocks_vec`, `feedback_scores`, `task_events`. Uses WAL mode
 - **llm.py** — `LLMClient` wrapper around llama-cpp-python. Methods: `embed()` / `embed_batch()` for semantic search
 - **model_manager.py** — Declarative model manifest (`dendr-models.yaml`), HuggingFace download, SHA256 verification and locking
-- **pipeline.py** — Ingest pipeline: parse → privacy → queue → embed → commit. Runs `reconcile_closures` first so user digest edits are in place before re-parse. Checkbox transitions (open→closed, closed→open) are logged as `task_events`
+- **pipeline.py** — Ingest pipeline: parse → queue → embed → commit. Runs `reconcile_closures` first so user digest edits are in place before re-parse. Checkbox transitions (open→closed, closed→open) are logged as `task_events`
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability
 - **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over raw block text), `/stats`, and `/metrics` endpoints. Semantic and hybrid results carry a 0-1 `score` (cosine similarity); `min_score` filters out weak matches. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
 - **watcher.py** — `watchdog`-based filesystem watcher that triggers ingest on Daily/ changes
@@ -132,4 +131,3 @@ Prometheus + Grafana stack via `docker compose up prometheus grafana gpu-exporte
 - **Feedback loop**: Digest sections include feedback comment blocks. User ratings are stored in `feedback_scores` and surfaced via `get_section_effectiveness()` so Claude can weight sections by past usefulness
 - **Two-phase queue**: Crash-safe processing via file-based pending → processing → done transitions
 - **Age-is-explicit**: Each block carries `source_date` and a computed `age_days`, and the synthesis prompt warns Claude that anything the user flagged as urgent N days ago was urgent *then*, not today
-- **Privacy-first**: Blocks pass through a regex privacy filter before embedding/storage. Private blocks are stored for local search but excluded from Claude payloads

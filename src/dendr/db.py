@@ -62,7 +62,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             block_hash        TEXT NOT NULL,
             checkbox_state    TEXT NOT NULL DEFAULT 'none',
             completion_status TEXT,
-            private           INTEGER NOT NULL DEFAULT 0,
             attachment_path   TEXT,
             attachment_type   TEXT,
             created_at        TEXT NOT NULL,
@@ -194,16 +193,15 @@ def upsert_block(conn: sqlite3.Connection, block: Block, source_date: str) -> in
         """
         INSERT INTO blocks (
             block_id, source_file, source_date, text, block_hash,
-            checkbox_state, completion_status, private,
+            checkbox_state, completion_status,
             attachment_path, attachment_type, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
         ON CONFLICT(block_id) DO UPDATE SET
             source_file = excluded.source_file,
             source_date = excluded.source_date,
             text = excluded.text,
             block_hash = excluded.block_hash,
             checkbox_state = excluded.checkbox_state,
-            private = excluded.private,
             attachment_path = excluded.attachment_path,
             attachment_type = excluded.attachment_type,
             updated_at = excluded.updated_at
@@ -215,7 +213,6 @@ def upsert_block(conn: sqlite3.Connection, block: Block, source_date: str) -> in
             block.text,
             block.block_hash,
             block.checkbox_state,
-            int(block.private),
             block.attachment_path,
             block.attachment_type,
             now,
@@ -396,17 +393,14 @@ def search_blocks_fts(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 50,
-    include_private: bool = True,
 ) -> list[sqlite3.Row]:
     """Full-text search across blocks."""
     q = """
         SELECT b.* FROM blocks b
         JOIN blocks_fts f ON b.id = f.rowid
         WHERE blocks_fts MATCH ?
+        LIMIT ?
     """
-    if not include_private:
-        q += " AND b.private = 0"
-    q += " LIMIT ?"
     return conn.execute(q, (query, limit)).fetchall()
 
 
@@ -414,7 +408,6 @@ def search_blocks_semantic(
     conn: sqlite3.Connection,
     embedding: np.ndarray,
     limit: int = 50,
-    include_private: bool = True,
     min_similarity: float = 0.0,
 ) -> list[tuple[sqlite3.Row, float]]:
     """Semantic search across blocks via blocks_vec.
@@ -449,8 +442,6 @@ def search_blocks_semantic(
     placeholders = ",".join("?" * len(ids))
     params: list = list(ids)
     q = f"SELECT * FROM blocks WHERE block_id IN ({placeholders})"  # noqa: S608
-    if not include_private:
-        q += " AND private = 0"
     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     rows = conn.execute(q, params).fetchall()
 
@@ -520,11 +511,11 @@ def get_stats(conn: sqlite3.Connection) -> dict:
 def get_blocks_in_period(
     conn: sqlite3.Connection, since: str, limit: int = 200
 ) -> list[sqlite3.Row]:
-    """All non-private blocks written in the period, oldest first."""
+    """All blocks written in the period, oldest first."""
     return conn.execute(
         """
         SELECT * FROM blocks
-        WHERE source_date >= ? AND private = 0
+        WHERE source_date >= ?
         ORDER BY source_date ASC, id ASC
         LIMIT ?
         """,
@@ -539,7 +530,6 @@ def get_open_tasks(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.R
         SELECT * FROM blocks
         WHERE checkbox_state = ?
           AND (completion_status IS NULL OR completion_status = ?)
-          AND private = 0
         ORDER BY source_date DESC
         LIMIT ?
         """,

@@ -1,4 +1,4 @@
-"""Core ingestion pipeline — parse, privacy, embed, commit."""
+"""Core ingestion pipeline — parse, embed, commit."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from dendr.llm import LLMClient
 from dendr.metrics import (
     BLOCKS_ERROR,
     BLOCKS_PROCESSED,
-    BLOCKS_PRIVATE,
     EMBED_THROUGHPUT,
     INGEST_CYCLE_SECONDS,
     TASKS_CLOSED,
@@ -50,7 +49,6 @@ from dendr.parser import (
     parse_closures,
     parse_daily_note,
 )
-from dendr.privacy import filter_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +86,7 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
 
 
 def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
-    """Tag privacy and enqueue dirty blocks."""
-    filter_blocks(dirty_blocks)
-    private_count = sum(1 for b in dirty_blocks if b.private)
-    if private_count:
-        BLOCKS_PRIVATE.inc(private_count)
+    """Enqueue dirty blocks."""
     for block in dirty_blocks:
         queue.enqueue(
             config,
@@ -102,7 +96,6 @@ def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
                 block_hash=block.block_hash,
                 block_text=block.text,
                 checkbox_state=block.checkbox_state,
-                private=block.private,
                 attachment_path=block.attachment_path,
                 attachment_type=block.attachment_type,
             ),
@@ -206,7 +199,6 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
             text=item.block_text,
             block_hash=item.block_hash,
             checkbox_state=item.checkbox_state,
-            private=item.private,
             attachment_path=item.attachment_path,
             attachment_type=item.attachment_type,
         )

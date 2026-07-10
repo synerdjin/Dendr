@@ -161,26 +161,6 @@ def test_fts_finds_raw_text():
     assert rows[0]["block_id"] == "dendr-test-1"
 
 
-def test_fts_excludes_private_when_requested():
-    conn = _temp_db()
-    upsert_block(
-        conn,
-        _make_block(
-            block_id="priv",
-            text="sensitive content",
-            private=True,
-        ),
-        "2026-04-08",
-    )
-    upsert_block(
-        conn,
-        _make_block(block_id="pub", text="sensitive content"),
-        "2026-04-08",
-    )
-    rows = search_blocks_fts(conn, "sensitive", include_private=False)
-    ids = [r["block_id"] for r in rows]
-    assert "priv" not in ids
-    assert "pub" in ids
 
 
 def test_fts_no_stale_tokens_on_update():
