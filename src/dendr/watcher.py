@@ -117,9 +117,9 @@ def run_daemon(config: Config) -> None:
     metrics_interval = 30  # seconds
     last_metrics = 0.0
 
-    # Fallback ingest poll — iCloud-on-Windows hydration often bypasses
-    # watchdog events, so a new daily note synced from iPhone may never
-    # fire on_modified. A periodic run_ingest catches what the watcher misses.
+    # Fallback ingest poll — iCloud sync (e.g. a note written on iPhone) can
+    # write the file in a way that bypasses FSEvents, so a new daily note may
+    # never fire on_modified. A periodic run_ingest catches what the watcher misses.
     poll_interval = 3600  # seconds
     last_poll = time.monotonic()
 

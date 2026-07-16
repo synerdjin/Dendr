@@ -20,14 +20,12 @@ def _write_manifest(path: Path, models: dict | None = None) -> Path:
         "version": 1,
         "models": models
         or {
-            "tagger": {
+            "embedding": {
                 "repo": "test/repo",
                 "filename": "test-model.gguf",
                 "sha256": "",
                 "size_bytes": 100,
                 "role": "Test model",
-                "context": 4096,
-                "gpu_layers": -1,
                 "gated": False,
             }
         },
@@ -42,8 +40,8 @@ def test_load_manifest():
     with tempfile.TemporaryDirectory() as td:
         mp = _write_manifest(Path(td))
         manifest = ModelManifest.load(mp)
-        assert "tagger" in manifest.specs
-        assert manifest.specs["tagger"].filename == "test-model.gguf"
+        assert "embedding" in manifest.specs
+        assert manifest.specs["embedding"].filename == "test-model.gguf"
 
 
 def test_check_missing_model():
@@ -54,7 +52,7 @@ def test_check_missing_model():
         models_dir.mkdir()
 
         statuses = check_all_models(models_dir, manifest)
-        assert not statuses["tagger"].present
+        assert not statuses["embedding"].present
 
 
 def test_check_present_model():
@@ -68,8 +66,8 @@ def test_check_present_model():
         (models_dir / "test-model.gguf").write_bytes(b"fake model data")
 
         statuses = check_all_models(models_dir, manifest)
-        assert statuses["tagger"].present
-        assert statuses["tagger"].hash_match is None  # no expected hash
+        assert statuses["embedding"].present
+        assert statuses["embedding"].hash_match is None  # no expected hash
 
 
 def test_sha256_file():
@@ -113,12 +111,12 @@ def test_lock_models():
         (models_dir / "test-model.gguf").write_bytes(b"model content")
 
         hashes = lock_models(models_dir, manifest, mp)
-        assert "tagger" in hashes
-        assert len(hashes["tagger"]) == 64
+        assert "embedding" in hashes
+        assert len(hashes["embedding"]) == 64
 
         # Reload and check hash was persisted
         manifest2 = ModelManifest.load(mp)
-        assert manifest2.specs["tagger"].sha256 == hashes["tagger"]
+        assert manifest2.specs["embedding"].sha256 == hashes["embedding"]
 
 
 def test_preflight_hash_mismatch():
@@ -126,14 +124,12 @@ def test_preflight_hash_mismatch():
         mp = _write_manifest(
             Path(td),
             models={
-                "tagger": {
+                "embedding": {
                     "repo": "test/repo",
                     "filename": "test-model.gguf",
                     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
                     "size_bytes": 100,
                     "role": "Test",
-                    "context": 4096,
-                    "gpu_layers": -1,
                     "gated": False,
                 }
             },

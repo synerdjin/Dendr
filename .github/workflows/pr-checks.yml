@@ -10,26 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: pip install ruff
+      - uses: astral-sh/setup-uv@v8.3.2
+      - name: Install lint tools
+        run: uv sync --only-group lint --no-install-project --locked
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
       - name: Ruff format check
-        run: ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/
 
   tests:
     name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install test dependencies
-        run: pip install pytest pytest-asyncio
-      - name: Install dendr
-        run: pip install -e .
+      - uses: astral-sh/setup-uv@v8.3.2
+      - name: Install dependencies
+        run: uv sync --group test --no-default-groups --locked
       - name: Run tests
-        run: pytest tests/ -v
+        run: uv run pytest tests/ -v

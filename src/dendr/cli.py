@@ -28,7 +28,7 @@ from dendr import __version__
 
 
 class _JsonFormatter(logging.Formatter):
-    """Emit structured JSON log lines for Docker / log aggregation."""
+    """Emit structured JSON log lines for log aggregation."""
 
     def format(self, record: logging.LogRecord) -> str:
         entry = {
@@ -128,8 +128,7 @@ def daemon(data_dir: str | None, vault: str | None) -> None:
     "--vault",
     type=click.Path(exists=True, file_okay=False),
     default=None,
-    help="Override vault path (e.g. for containerized runs where the saved "
-    "config.json path is from the host)",
+    help="Override vault path (e.g. if config.json has a stale path)",
 )
 def ingest(data_dir: str | None, vault: str | None) -> None:
     """Run a single ingest cycle."""
@@ -286,7 +285,7 @@ def search(query: str, mode: str, limit: int, data_dir: str | None) -> None:
 @click.option(
     "--host",
     default="127.0.0.1",
-    help="Bind address (use 0.0.0.0 for Docker)",
+    help="Bind address (use 0.0.0.0 to expose on the LAN)",
 )
 def serve(data_dir: str | None, vault: str | None, host: str) -> None:
     """Start the search HTTP server."""
@@ -306,7 +305,7 @@ def serve(data_dir: str | None, vault: str | None, host: str) -> None:
     "--vault",
     type=click.Path(exists=True, file_okay=False),
     default=None,
-    help="Override vault path (needed when config.json has a stale path, e.g. inside containers)",
+    help="Override vault path (needed when config.json has a stale path)",
 )
 @click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
 @click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
@@ -524,8 +523,7 @@ def autostart() -> None:
 def _require_macos() -> None:
     if sys.platform != "darwin":
         raise click.ClickException(
-            "`dendr autostart` uses macOS launchd and only works on macOS. "
-            "On Linux use a systemd user unit; on Windows use Task Scheduler."
+            "`dendr autostart` uses macOS launchd and only works on macOS."
         )
 
 

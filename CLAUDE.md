@@ -15,12 +15,16 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 > **Upgrade note (v4):** the embedding model changed from nomic-embed-text-v1.5 to **embeddinggemma-300m** (still 768d, so `blocks_vec` is unchanged), and embeddings now carry task-instruction prompts. The vector space is different, so stored embeddings must be regenerated: `dendr models pull` then `rm state.sqlite && dendr ingest`. Hybrid search now fuses FTS + semantic with Reciprocal Rank Fusion instead of concatenation.
 >
 > **Upgrade note (v5):** the regex privacy filter (`privacy.py`, `#dendr-private`/`#private`/`#redact` tags, the `blocks.private` column) was removed — it added noise without meaningfully protecting anything a determined regex couldn't miss. All blocks are now stored, searched, and sent to Claude at digest time the same way. No rebuild needed: `init_schema()` drops the leftover `private` column from `state.sqlite` automatically on next connect (SQLite ≥3.35; older versions just leave it in place, harmless either way).
+>
+> **Upgrade note (v6):** Docker support was dropped — `Dockerfile`, `docker-compose.yaml`, and the Prometheus/Grafana/GPU-exporter monitoring stack are gone. The Docker image was built on `nvidia/cuda` and was never actually usable on Apple Silicon anyway (no Metal passthrough in a Linux VM); this MacBook Air M4 is now the only platform Dendr targets. `dendr serve`'s `/metrics` and the daemon's `:9100/metrics` endpoints still exist in code — nothing scrapes them by default, no dashboard is provided. Day-to-day tasks now go through the `Makefile` (`make help`) instead of `docker compose`.
+>
+> **Upgrade note (v7):** dependency management switched from bare `pip` to [`uv`](https://docs.astral.sh/uv/), with a committed `uv.lock` for reproducible installs. Dev tools moved from a `dev` extra to PEP 735 `[dependency-groups]` (`lint` = ruff, `test` = pytest, `dev` = both — `dev` is uv's default group, so a bare `uv sync` still gets everything locally). `make install` / `scripts/update.sh` now run `UV_PROJECT_ENVIRONMENT=~/.dendr-venv uv sync` instead of `pip install -e .[dev]` — same venv location, no rebuild needed. Requires `uv` on `PATH` (`brew install uv`). CI (`pr-checks.yml`, `security-scan.yml`) installs via `astral-sh/setup-uv` + `uv sync --locked` variants scoped per job (`--only-group lint --no-install-project` for the lint job so it skips building `llama-cpp-python` just to run ruff; `--group test --no-default-groups` for the tests job), so a stale lockfile now fails the build instead of silently resolving something different than what's pinned.
 
 ## Commands
 
 ```bash
-# Install (editable)
-pip install -e .
+# Install (editable, from uv.lock — dev group included by default)
+uv sync
 
 # Update a local install after pulling changes
 # (git pull + refresh deps + verify models + restart the launchd daemon).
@@ -28,9 +32,14 @@ pip install -e .
 # script also covers new deps, model-manifest changes, and the long-lived daemon.
 scripts/update.sh
 
+# Or via the Makefile, which wraps the above (and more) around ~/.dendr-venv —
+# see `make help` for the full target list.
+make update
+
 # Lint & format (run before pushing)
 ruff check --fix src/ tests/           # auto-fixes unused imports (F401 only)
-ruff format src/ tests/                # apply formatting
+ruff format --check src/ tests/        # CI runs format --check, not just check
+make check                             # lint + format-check + test in one shot
 
 # Run tests
 pytest
@@ -42,7 +51,6 @@ dendr daemon                          # watch Daily/ for changes
 dendr ingest                          # single ingest cycle
 dendr search "query" --mode hybrid
 dendr serve                           # search server on :7777
-dendr serve --host 0.0.0.0            # bind all interfaces (Docker)
 dendr stats
 dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
@@ -54,15 +62,11 @@ dendr autostart install               # write ~/Library/LaunchAgents/com.dendr.d
 dendr autostart status                # is the agent installed / loaded?
 dendr autostart uninstall             # stop + remove the agent
 
-# Search API (requires dendr serve or Docker search container)
+# Search API (requires dendr serve)
 curl "http://localhost:7777/search?q=your+query&mode=hybrid&limit=10"
 curl "http://localhost:7777/search?q=your+query&mode=semantic&limit=5"
 curl "http://localhost:7777/search?q=your+query&mode=fts&limit=10"
 curl "http://localhost:7777/stats"
-
-# Docker (requires nvidia-container-toolkit)
-docker compose up -d                  # daemon + search + monitoring
-docker compose run daemon dendr models pull  # first-time model download
 
 # Structured JSON logging
 DENDR_LOG_JSON=1 dendr daemon
@@ -93,7 +97,7 @@ dendr digest --claude
 ### Key modules (src/dendr/)
 
 - **cli.py** — Click CLI entry point, registered as `dendr` console script
-- **config.py** — `Config` dataclass with all paths and `append_activity_log()`. Vault content lives in iCloud-synced `vault_path`; state/models/queue live in `data_dir` (`%LOCALAPPDATA%\Dendr` on Windows)
+- **config.py** — `Config` dataclass with all paths and `append_activity_log()`. Vault content lives in iCloud-synced `vault_path`; state/models/queue live in `data_dir` (`~/.local/share/dendr` on macOS)
 - **parser.py** — Block-level parser for Obsidian daily notes. Assigns `^dendr-<ulid>` block IDs, hashes blocks for incremental processing, detects `- [ ]` / `- [x]` checkbox state
 - **queue.py** — File-based two-phase commit queue (pending → processing → done). On crash, items in processing/ are recovered on restart
 - **db.py** — SQLite with FTS5 and `sqlite-vec`. Tables: `blocks`, `blocks_fts`, `blocks_vec`, `feedback_scores`, `task_events`. Uses WAL mode
@@ -116,10 +120,6 @@ Declared in `dendr-models.yaml`. One GGUF model runs via llama-cpp-python:
 
 - **Vault** (iCloud-synced): `Daily/`, `Wiki/`, `Attachments/` — markdown files the user reads on any device
 - **Data dir** (local only): `state.sqlite`, `queue/`, `models/` — never synced
-
-### Monitoring
-
-Prometheus + Grafana stack via `docker compose up prometheus grafana gpu-exporter`. Dashboard auto-provisions with pipeline, model, and GPU metrics.
 
 ## Key design patterns
 

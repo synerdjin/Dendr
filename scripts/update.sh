@@ -2,10 +2,11 @@
 #
 # Update a local Dendr install after pulling new changes.
 #
-# Because Dendr is installed editable (`pip install -e .`), pure-Python
-# changes take effect on `git pull` alone. This script handles the cases
-# that need more than that: new dependencies, model-manifest changes, and
-# restarting the long-lived launchd daemon so it runs the new code.
+# Because Dendr is installed editable (via `uv sync`), pure-Python changes
+# take effect on `git pull` alone. This script handles the cases that need
+# more than that: new dependencies (resolved from uv.lock), model-manifest
+# changes, and restarting the long-lived launchd daemon so it runs the new
+# code.
 #
 # Usage:
 #   scripts/update.sh                 # pull + reinstall deps + restart daemon
@@ -16,14 +17,18 @@ set -euo pipefail
 # --- Resolve paths -----------------------------------------------------------
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${DENDR_VENV:-$HOME/.dendr-venv}"
-PIP="$VENV/bin/pip"
 DENDR="$VENV/bin/dendr"
 LABEL="com.dendr.daemon"
 
 cd "$REPO_DIR"
 
-if [[ ! -x "$PIP" ]]; then
-  echo "error: no venv at $VENV (set DENDR_VENV to override)" >&2
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv not found on PATH (install: https://docs.astral.sh/uv/)" >&2
+  exit 1
+fi
+
+if [[ ! -x "$DENDR" ]]; then
+  echo "error: no venv at $VENV (set DENDR_VENV to override; run 'make install' first)" >&2
   exit 1
 fi
 
@@ -40,8 +45,10 @@ else
 fi
 
 # --- 2. Reinstall (picks up new deps / entry points; cheap if unchanged) -----
-echo "==> pip install -e . (refresh dependencies)"
-"$PIP" install -e . --quiet
+# Installs the dev group too (ruff, pytest) since this venv also backs
+# `make check` — same venv, dev and runtime aren't split for a single-user tool.
+echo "==> uv sync (refresh dependencies from uv.lock)"
+UV_PROJECT_ENVIRONMENT="$VENV" uv sync
 
 # --- 3. Verify models; pull if the manifest changed --------------------------
 echo "==> dendr models verify"

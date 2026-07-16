@@ -21,17 +21,3 @@ updates:
     labels:
       - "ci"
     open-pull-requests-limit: 5
-
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "monthly"
-    commit-message:
-      prefix: "docker"
-    labels:
-      - "dependencies"
-    open-pull-requests-limit: 5
-    ignore:
-      # Only allow patch bumps for CUDA base image — major/minor jumps need manual testing
-      - dependency-name: "nvidia/cuda"
-        update-types: ["version-update:semver-major"]

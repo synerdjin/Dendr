@@ -40,13 +40,9 @@ Desktop.ini
 state.sqlite
 state.sqlite-wal
 state.sqlite-shm
-ft-pairs.jsonl
 *.gguf
 
 # Queue artifacts
 queue/pending/
 queue/processing/
 queue/done/
-
-# Temporary files from VLM OCR
-*.tmp.png

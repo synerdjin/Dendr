@@ -27,8 +27,6 @@ class ModelSpec:
     filename: str
     sha256: str
     size_bytes: int
-    context: int
-    gpu_layers: int
     gated: bool
     description: str  # human-readable role description
 
@@ -72,8 +70,6 @@ class ModelManifest:
                 filename=model_data["filename"],
                 sha256=model_data.get("sha256", ""),
                 size_bytes=model_data.get("size_bytes", 0),
-                context=model_data.get("context", 4096),
-                gpu_layers=model_data.get("gpu_layers", -1),
                 gated=model_data.get("gated", False),
                 description=model_data.get("role", ""),
             )
@@ -90,8 +86,6 @@ class ModelManifest:
                 "sha256": spec.sha256,
                 "size_bytes": spec.size_bytes,
                 "role": spec.description,
-                "context": spec.context,
-                "gpu_layers": spec.gpu_layers,
                 "gated": spec.gated,
             }
 

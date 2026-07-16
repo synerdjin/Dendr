@@ -8,6 +8,4 @@ models:
     sha256: 6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67
     size_bytes: 328577056
     role: Text embeddings for semantic search (768d Matryoshka, QAT Q8_0)
-    context: 2048
-    gpu_layers: -1
     gated: false
