@@ -14,14 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: pip install ruff
+      - uses: astral-sh/setup-uv@v8
+      - name: Install lint tools
+        run: uv sync --only-group lint --no-install-project --locked
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
       - name: Ruff format check
-        run: ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/
 
   # ── SAST — Static Application Security Testing ────────────────────
   sast-semgrep:
@@ -64,15 +63,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v8
       - name: Install dependencies
-        run: |
-          pip install pip-audit
-          pip install . 2>/dev/null || pip install --no-build-isolation . 2>/dev/null || echo "Install failed, auditing from pyproject.toml"
+        run: uv sync --locked
       - name: pip-audit
-        run: pip-audit --desc --format columns || true
+        run: uv run --with pip-audit pip-audit --desc --format columns || true
 
   # ── DAST — Dynamic Application Security Testing ───────────────────
   dast:
@@ -80,17 +75,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v8
       - name: Install dendr
-        run: |
-          pip install . 2>/dev/null || pip install --no-build-isolation . 2>/dev/null || true
-          pip install uvicorn fastapi httpx
+        run: uv sync --locked
       - name: Start search server
         run: |
           mkdir -p /tmp/dendr-vault/Daily /tmp/dendr-vault/Wiki /tmp/dendr-data
-          python -c "
+          uv run python -c "
           from dendr.db import connect, init_schema
           from dendr.config import Config
           config = Config(vault_path='/tmp/dendr-vault', data_dir='/tmp/dendr-data')
@@ -98,7 +89,7 @@ jobs:
           init_schema(conn)
           conn.close()
           " 2>/dev/null || true
-          timeout 120 python -m uvicorn dendr.search:app --host 0.0.0.0 --port 7777 &
+          timeout 120 uv run python -m uvicorn dendr.search:app --host 0.0.0.0 --port 7777 &
           sleep 5
       - name: ZAP baseline scan
         uses: zaproxy/action-baseline@v0.15.0
@@ -126,12 +117,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install test dependencies
-        run: pip install pytest
-      - name: Install dendr
-        run: pip install -e .
+      - uses: astral-sh/setup-uv@v8
+      - name: Install dependencies
+        run: uv sync --group test --no-default-groups --locked
       - name: Run tests
-        run: pytest tests/ -v
+        run: uv run pytest tests/ -v

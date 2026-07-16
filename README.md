@@ -22,6 +22,7 @@ Dendr targets Apple Silicon Macs — this is the only platform it's built and ru
 
 - macOS on Apple Silicon (embeddings run on the Metal GPU via `llama-cpp-python`)
 - Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/) for dependency management (`brew install uv`)
 - Local model weights (see [Model Setup](#model-setup))
 - Obsidian vault synced via iCloud (or any sync)
 
@@ -31,7 +32,8 @@ Runs natively — no containers. A dedicated venv (rather than the ambient
 `pip install -e .` into whatever Python happens to be active) gives the
 autostart agent a stable interpreter to pin, real macOS FSEvents for the file
 watcher, and lets `llama-cpp-python` build against Metal so embeddings
-actually use the GPU.
+actually use the GPU. `make install` points `uv sync` at that venv via
+`UV_PROJECT_ENVIRONMENT`, installing exactly what's pinned in `uv.lock`.
 
 ```bash
 git clone https://github.com/synerdjin/Dendr.git

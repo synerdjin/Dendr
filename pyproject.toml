@@ -18,11 +18,13 @@ dependencies = [
     "prometheus-client>=0.25.0",
 ]
 
-[project.optional-dependencies]
-dev = ["ruff>=0.15", "pytest>=9.0"]
-
 [project.scripts]
 dendr = "dendr.cli:main"
+
+[dependency-groups]
+lint = ["ruff>=0.15"]
+test = ["pytest>=9.0"]
+dev = [{include-group = "lint"}, {include-group = "test"}]
 
 [build-system]
 requires = ["setuptools>=82.0.1"]

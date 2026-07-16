@@ -4,10 +4,12 @@
 # Override with `make DENDR_VENV=~/other-venv <target>`.
 DENDR_VENV ?= $(HOME)/.dendr-venv
 DENDR      := $(DENDR_VENV)/bin/dendr
-PYTHON     := $(DENDR_VENV)/bin/python
-PIP        := $(DENDR_VENV)/bin/pip
 PYTEST     := $(DENDR_VENV)/bin/pytest
 RUFF       := $(DENDR_VENV)/bin/ruff
+
+# Points every `uv` invocation in this file at the shared venv above instead
+# of uv's default project-local .venv.
+export UV_PROJECT_ENVIRONMENT := $(DENDR_VENV)
 
 .PHONY: help
 help: ## Show this list
@@ -16,9 +18,9 @@ help: ## Show this list
 ## --- Setup -----------------------------------------------------------------
 
 .PHONY: install
-install: ## Create the venv (if missing) and install Dendr + dev tools into it, editable
-	@test -x "$(PYTHON)" || python3 -m venv "$(DENDR_VENV)"
-	$(PIP) install -e ".[dev]" --quiet
+install: ## Create the venv (if missing) and install Dendr + dev tools into it, editable, from uv.lock
+	@command -v uv >/dev/null 2>&1 || { echo "error: uv not found on PATH (install: https://docs.astral.sh/uv/)" >&2; exit 1; }
+	uv sync
 
 .PHONY: update
 update: ## Pull latest, refresh deps, verify models, restart the login daemon
