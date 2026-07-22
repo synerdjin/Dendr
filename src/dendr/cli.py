@@ -2,7 +2,6 @@
 
 Commands:
   dendr init <vault_path>    Initialize a vault for Dendr
-  dendr daemon               Run the watcher daemon
   dendr ingest               Run a single ingest cycle
   dendr search <query>       Search the knowledge base
   dendr serve                Start the search server
@@ -97,29 +96,6 @@ def init(vault_path: str) -> None:
     click.echo(f"  Data directory: {config.data_dir}")
     click.echo(f"  Database: {config.db_path}")
     click.echo(f"  Vault ID: {config.vault_id}")
-
-
-@main.command()
-@click.option(
-    "--data-dir", type=click.Path(), default=None, help="Override data directory"
-)
-@click.option(
-    "--vault",
-    type=click.Path(exists=True, file_okay=False),
-    default=None,
-    help="Override vault path",
-)
-def daemon(data_dir: str | None, vault: str | None) -> None:
-    """Run the watcher daemon (blocks until Ctrl-C)."""
-    from dendr.config import Config
-    from dendr.watcher import run_daemon
-
-    dd = Path(data_dir) if data_dir else None
-    config = Config.load(dd)
-    if vault:
-        config.vault_path = Path(vault).resolve()
-    click.echo(f"Starting daemon for vault: {config.vault_path}")
-    run_daemon(config)
 
 
 @main.command()
@@ -517,7 +493,7 @@ def models_lock(data_dir: str | None) -> None:
 
 @main.group()
 def autostart() -> None:
-    """Manage the login LaunchAgent that runs the daemon (macOS)."""
+    """Manage the login LaunchAgent that runs ingest on a schedule (macOS)."""
 
 
 def _require_macos() -> None:
@@ -529,8 +505,14 @@ def _require_macos() -> None:
 
 @autostart.command("install")
 @click.option("--data-dir", type=click.Path(), default=None)
-def autostart_install(data_dir: str | None) -> None:
-    """Install + load a LaunchAgent so the daemon starts on login."""
+@click.option(
+    "--interval-minutes",
+    type=int,
+    default=15,
+    help="How often to run `dendr ingest` (default: every 15 minutes)",
+)
+def autostart_install(data_dir: str | None, interval_minutes: int) -> None:
+    """Install + load a LaunchAgent that runs ingest on a schedule."""
     from dendr import autostart as agent
     from dendr.config import Config
 
@@ -543,15 +525,22 @@ def autostart_install(data_dir: str | None) -> None:
     if not config.config_file_path.exists():
         click.echo(
             f"⚠  No saved config at {config.config_file_path}. "
-            "Run `dendr init <vault>` first, or the daemon will fail to start.",
+            "Run `dendr init <vault>` first, or ingest will fail to start.",
             err=True,
         )
+
+    # Clean up a pre-v8 watcher-daemon agent if it's still installed, so it
+    # doesn't keep running (KeepAlive) alongside the new scheduled one.
+    legacy_path = agent.remove_legacy_agent()
+    if legacy_path:
+        click.echo(f"✓ Removed legacy LaunchAgent: {legacy_path}")
 
     working_dir = str(config.vault_path) if config.vault_path.exists() else None
     plist = agent.render_plist(
         agent.program_args(config.data_dir),
-        stdout_path=str(config.logs_dir / "daemon.out.log"),
-        stderr_path=str(config.logs_dir / "daemon.err.log"),
+        interval_seconds=interval_minutes * 60,
+        stdout_path=str(config.logs_dir / "ingest.out.log"),
+        stderr_path=str(config.logs_dir / "ingest.err.log"),
         working_dir=working_dir,
     )
 
@@ -569,8 +558,8 @@ def autostart_install(data_dir: str | None) -> None:
 
     click.echo(f"✓ Installed LaunchAgent: {path}")
     click.echo(f"  Runs: {' '.join(agent.program_args(config.data_dir))}")
-    click.echo(f"  Logs: {config.logs_dir}/daemon.{{out,err}}.log")
-    click.echo("  The daemon is now running and will start on every login.")
+    click.echo(f"  Every {interval_minutes} minutes, plus once at login.")
+    click.echo(f"  Logs: {config.logs_dir}/ingest.{{out,err}}.log")
     click.echo("  Manage it with `dendr autostart status` / `... uninstall`.")
 
 
@@ -589,6 +578,10 @@ def autostart_uninstall() -> None:
     else:
         click.echo(f"No LaunchAgent found at {path}; nothing to remove.")
 
+    legacy_path = agent.remove_legacy_agent()
+    if legacy_path:
+        click.echo(f"✓ Removed legacy LaunchAgent: {legacy_path}")
+
 
 @autostart.command("status")
 def autostart_status() -> None:
@@ -604,6 +597,13 @@ def autostart_status() -> None:
     click.echo(f"Loaded: {'yes (running / scheduled)' if loaded else 'no'}")
     if installed and not loaded:
         click.echo("  Installed but not loaded — try `dendr autostart install`.")
+
+    legacy_path = agent.plist_path(agent.LEGACY_LAUNCH_AGENT_LABEL)
+    if legacy_path.exists() or agent.is_loaded(agent.LEGACY_LAUNCH_AGENT_LABEL):
+        click.echo(
+            f"⚠  Legacy pre-v8 agent ({agent.LEGACY_LAUNCH_AGENT_LABEL}) still "
+            "present — run `dendr autostart install` or `... uninstall` to remove it."
+        )
 
 
 # --- Schema and prompt generation ---

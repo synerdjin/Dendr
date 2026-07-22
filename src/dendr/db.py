@@ -141,7 +141,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # Migration: recreate blocks_vec with cosine distance metric if an older
     # DB created it with the sqlite-vec default (L2). Detected by inspecting
     # the CREATE statement for the `distance_metric` keyword. Two concurrent
-    # init_schema callers (e.g. daemon + search server on fresh upgrade) may
+    # init_schema callers (e.g. ingest + search server on fresh upgrade) may
     # both attempt the DROP — WAL serializes writes and the OperationalError
     # from the loser is swallowed at debug level below.
     try:

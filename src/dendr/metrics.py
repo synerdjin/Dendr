@@ -1,7 +1,6 @@
 """Prometheus metrics for Dendr observability.
 
 All metric definitions live here. Other modules import and use them.
-The daemon exposes metrics via a standalone HTTP server on port 9100.
 The search server exposes them on its existing FastAPI app at /metrics.
 """
 
@@ -9,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +46,6 @@ EMBED_THROUGHPUT = Gauge(
 # ---------------------------------------------------------------------------
 # Pipeline / queue
 # ---------------------------------------------------------------------------
-QUEUE_PENDING = Gauge(
-    "dendr_queue_pending",
-    "Number of blocks in the pending queue",
-)
-
-QUEUE_PROCESSING = Gauge(
-    "dendr_queue_processing",
-    "Number of blocks currently being processed",
-)
-
 BLOCKS_PROCESSED = Counter(
     "dendr_blocks_processed_total",
     "Total blocks successfully committed",
@@ -76,11 +65,6 @@ INGEST_CYCLE_SECONDS = Histogram(
 # ---------------------------------------------------------------------------
 # Task lifecycle
 # ---------------------------------------------------------------------------
-OPEN_TASKS = Gauge(
-    "dendr_open_tasks",
-    "Number of currently open checkbox tasks",
-)
-
 TASKS_CLOSED = Counter(
     "dendr_tasks_closed_total",
     "Total task closure events recorded",
@@ -98,14 +82,6 @@ SEARCH_REQUEST_SECONDS = Histogram(
 )
 
 # ---------------------------------------------------------------------------
-# Knowledge base gauges (updated periodically)
-# ---------------------------------------------------------------------------
-BLOCKS_TOTAL = Gauge(
-    "dendr_blocks_total",
-    "Total blocks in the knowledge base",
-)
-
-# ---------------------------------------------------------------------------
 # Digest
 # ---------------------------------------------------------------------------
 DIGEST_RUNS = Counter(
@@ -113,39 +89,3 @@ DIGEST_RUNS = Counter(
     "Total digest generation runs",
     ["mode"],  # "local" | "claude"
 )
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def start_metrics_server(port: int = 9100) -> None:
-    """Start a standalone Prometheus metrics HTTP server (for the daemon)."""
-    try:
-        start_http_server(port)
-        logger.info("Metrics server started on port %d", port)
-    except OSError as e:
-        logger.warning("Could not start metrics server on port %d: %s", port, e)
-
-
-def collect_queue_metrics(config) -> None:
-    """Read queue directories and update gauge values."""
-    from dendr import queue
-
-    try:
-        QUEUE_PENDING.set(queue.pending_count(config))
-        QUEUE_PROCESSING.set(queue.processing_count(config))
-    except Exception:
-        logger.debug("Failed to collect queue metrics", exc_info=True)
-
-
-def collect_db_metrics(conn) -> None:
-    """Read database stats and update gauge values."""
-    try:
-        from dendr import db
-
-        stats = db.get_stats(conn)
-        BLOCKS_TOTAL.set(stats.get("blocks", 0))
-        OPEN_TASKS.set(stats.get("open_tasks", 0))
-    except Exception:
-        logger.debug("Failed to collect DB metrics", exc_info=True)

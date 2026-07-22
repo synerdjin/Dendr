@@ -1,6 +1,6 @@
 # Dendr
 
-A personal knowledge compiler that watches Obsidian Daily Notes, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
+A personal knowledge compiler that ingests Obsidian Daily Notes on a schedule, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
 
 **Local models do only what Claude can't or shouldn't**: embeddings for semantic search. **Claude (via Claude Code)** handles weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
 
@@ -8,7 +8,7 @@ A personal knowledge compiler that watches Obsidian Daily Notes, stores each blo
 
 ```
 Daily Notes (you write here)
-    ↓ watcher detects changes
+    ↓ scheduled ingest picks up changes
     ↓ block-level parsing
     ↓ embed raw block text (EmbeddingGemma)
     ↓ commit to SQLite (blocks + FTS + vector index)
@@ -30,10 +30,10 @@ Dendr targets Apple Silicon Macs — this is the only platform it's built and ru
 
 Runs natively — no containers. A dedicated venv (rather than the ambient
 `pip install -e .` into whatever Python happens to be active) gives the
-autostart agent a stable interpreter to pin, real macOS FSEvents for the file
-watcher, and lets `llama-cpp-python` build against Metal so embeddings
-actually use the GPU. `make install` points `uv sync` at that venv via
-`UV_PROJECT_ENVIRONMENT`, installing exactly what's pinned in `uv.lock`.
+autostart agent a stable interpreter to pin, and lets `llama-cpp-python` build
+against Metal so embeddings actually use the GPU. `make install` points
+`uv sync` at that venv via `UV_PROJECT_ENVIRONMENT`, installing exactly what's
+pinned in `uv.lock`.
 
 ```bash
 git clone https://github.com/synerdjin/Dendr.git
@@ -43,7 +43,7 @@ make install    # creates ~/.dendr-venv, installs Dendr + dev tools (builds llam
 ~/.dendr-venv/bin/dendr init /path/to/vault
 ~/.dendr-venv/bin/dendr models pull && ~/.dendr-venv/bin/dendr models lock
 
-# Run the daemon on every login (writes a launchd LaunchAgent):
+# Run ingest on a schedule (writes a launchd LaunchAgent; every 15 min by default):
 ~/.dendr-venv/bin/dendr autostart install
 ```
 
@@ -62,7 +62,7 @@ dendr digest --claude
 # Start the search HTTP server (for Claude Code integration)
 dendr serve
 
-# Run a single ingest cycle (the daemon from `autostart install` already does this on change)
+# Run a single ingest cycle (the scheduled agent from `autostart install` already does this periodically)
 dendr ingest
 ```
 
@@ -74,7 +74,6 @@ See [Regular tasks](#regular-tasks) below for the `Makefile` wrapping these
 | Command | Description |
 |---------|-------------|
 | `dendr init <vault>` | Initialize vault structure + database + Claude prompts |
-| `dendr daemon` | Watch `Daily/` and auto-ingest on changes |
 | `dendr ingest` | Run a single ingest cycle |
 | `dendr reprocess` | Mark all blocks dirty and re-embed from scratch |
 | `dendr search <query>` | Search blocks (FTS, semantic, or hybrid) |
@@ -86,7 +85,7 @@ See [Regular tasks](#regular-tasks) below for the `Makefile` wrapping these
 | `dendr models verify` | Check SHA256 integrity of models |
 | `dendr models list` | Show model status table |
 | `dendr models lock` | Pin SHA256 hashes into manifest |
-| `dendr autostart install` | Run the daemon on login via a macOS LaunchAgent |
+| `dendr autostart install` | Run ingest on a schedule via a macOS LaunchAgent |
 | `dendr autostart status` | Show whether the login agent is installed / loaded |
 | `dendr autostart uninstall` | Stop and remove the login agent |
 
@@ -114,7 +113,7 @@ each time:
 
 ```bash
 make help          # list every target
-make update        # git pull + refresh deps + verify models + restart the daemon
+make update        # git pull + refresh deps + verify models + restart the ingest agent
 make ingest         # one ingest cycle
 make digest         # weekly digest + Claude synthesis prompt
 make stats          # knowledge base statistics
@@ -164,7 +163,7 @@ Tasks are identified by Markdown checkboxes. Checkbox transitions (open → clos
 ## Structured logging
 
 ```bash
-DENDR_LOG_JSON=1 dendr daemon
+DENDR_LOG_JSON=1 dendr ingest
 ```
 
 ## Claude Code integration

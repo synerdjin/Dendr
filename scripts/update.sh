@@ -5,11 +5,11 @@
 # Because Dendr is installed editable (via `uv sync`), pure-Python changes
 # take effect on `git pull` alone. This script handles the cases that need
 # more than that: new dependencies (resolved from uv.lock), model-manifest
-# changes, and restarting the long-lived launchd daemon so it runs the new
-# code.
+# changes, and kicking the scheduled launchd ingest agent so its next run
+# picks up the new code.
 #
 # Usage:
-#   scripts/update.sh                 # pull + reinstall deps + restart daemon
+#   scripts/update.sh                 # pull + reinstall deps + restart agent
 #   DENDR_VENV=~/.dendr-venv scripts/update.sh
 #
 set -euo pipefail
@@ -18,7 +18,8 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${DENDR_VENV:-$HOME/.dendr-venv}"
 DENDR="$VENV/bin/dendr"
-LABEL="com.dendr.daemon"
+LABEL="com.dendr.ingest"
+LEGACY_LABEL="com.dendr.daemon"  # pre-v8 watcher daemon; migrated below if still loaded
 
 cd "$REPO_DIR"
 
@@ -57,13 +58,19 @@ if ! "$DENDR" models verify; then
   "$DENDR" models pull
 fi
 
-# --- 4. Restart the daemon so it runs the new code ---------------------------
+# --- 4. Kick the agent so its next ingest run uses the new code --------------
 if launchctl list "$LABEL" >/dev/null 2>&1; then
-  echo "==> restarting daemon ($LABEL)"
+  echo "==> restarting ingest agent ($LABEL)"
   launchctl kickstart -k "gui/$(id -u)/$LABEL"
-  echo "    daemon restarted"
+  echo "    agent restarted"
+elif launchctl list "$LEGACY_LABEL" >/dev/null 2>&1; then
+  # Still on the pre-v8 watcher daemon (`dendr daemon`, now deleted) — leaving
+  # it running would crash-loop on its next restart. `autostart install`
+  # removes the legacy agent and installs the scheduled one in its place.
+  echo "==> found legacy agent ($LEGACY_LABEL) still loaded — migrating"
+  "$DENDR" autostart install
 else
-  echo "==> daemon not loaded (skip restart)"
+  echo "==> ingest agent not loaded (skip restart)"
   echo "    start it with: dendr autostart install"
 fi
 

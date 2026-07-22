@@ -1,9 +1,10 @@
-"""macOS launchd LaunchAgent generation for running the daemon on login.
+"""macOS launchd LaunchAgent generation for running ingest on a schedule.
 
 Pure helpers (plist rendering, paths, launchctl invocation) live here so the CLI
 layer stays thin and the rendering is unit-testable without touching launchctl.
-The agent runs ``<python> -m dendr daemon`` with ``RunAtLoad`` + ``KeepAlive`` so
-it starts at login and is respawned if it crashes.
+The agent runs ``<python> -m dendr ingest`` with ``RunAtLoad`` (once at login)
+and ``StartInterval`` (every N seconds thereafter) — each run is a single ingest
+cycle that exits, not a long-lived process.
 """
 
 from __future__ import annotations
@@ -14,7 +15,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-LAUNCH_AGENT_LABEL = "com.dendr.daemon"
+LAUNCH_AGENT_LABEL = "com.dendr.ingest"
+
+# Pre-v8 label: the watcher daemon this agent replaced. `autostart install`
+# cleans up an agent still running under this label so it doesn't keep
+# respawning (KeepAlive) alongside the new scheduled one.
+LEGACY_LAUNCH_AGENT_LABEL = "com.dendr.daemon"
 
 
 def plist_path(label: str = LAUNCH_AGENT_LABEL) -> Path:
@@ -29,7 +35,7 @@ def program_args(data_dir: Path | None = None, python: str | None = None) -> lis
     the agent runs in the exact environment that installed it — no reliance on a
     console script being on ``PATH`` (launchd runs with a bare environment).
     """
-    args = [python or sys.executable, "-m", "dendr", "daemon"]
+    args = [python or sys.executable, "-m", "dendr", "ingest"]
     if data_dir is not None:
         args += ["--data-dir", str(data_dir)]
     return args
@@ -39,18 +45,19 @@ def build_plist_dict(
     args: list[str],
     *,
     label: str = LAUNCH_AGENT_LABEL,
+    interval_seconds: int = 900,
     stdout_path: str | None = None,
     stderr_path: str | None = None,
     working_dir: str | None = None,
 ) -> dict:
-    """Assemble the launchd property-list dict for the daemon agent."""
+    """Assemble the launchd property-list dict for the scheduled ingest agent."""
     d: dict = {
         "Label": label,
         "ProgramArguments": args,
         "RunAtLoad": True,
-        "KeepAlive": True,
-        # Throttle respawns and run at lowered priority — this is a background
-        # file watcher, not an interactive job.
+        "StartInterval": interval_seconds,
+        # Run at lowered priority — this is a background batch job, not an
+        # interactive one.
         "ProcessType": "Background",
     }
     if stdout_path:
@@ -108,3 +115,16 @@ def is_loaded(label: str = LAUNCH_AGENT_LABEL) -> bool:
     """Whether launchd currently has the agent loaded."""
     rc, _ = _run(["launchctl", "list", label])
     return rc == 0
+
+
+def remove_legacy_agent(label: str = LEGACY_LAUNCH_AGENT_LABEL) -> Path | None:
+    """Unload + delete a pre-v8 watcher-daemon agent still installed under `label`.
+
+    Returns its plist path if one was found and removed, else None.
+    """
+    path = plist_path(label)
+    if not path.exists():
+        return None
+    unload_agent(path, label=label)
+    path.unlink()
+    return path
