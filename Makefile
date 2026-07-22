@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-# Same venv scripts/update.sh manages and the launchd daemon runs from.
+# Same venv scripts/update.sh manages and the launchd ingest agent runs from.
 # Override with `make DENDR_VENV=~/other-venv <target>`.
 DENDR_VENV ?= $(HOME)/.dendr-venv
 DENDR      := $(DENDR_VENV)/bin/dendr
@@ -23,7 +23,7 @@ install: ## Create the venv (if missing) and install Dendr + dev tools into it, 
 	uv sync
 
 .PHONY: update
-update: ## Pull latest, refresh deps, verify models, restart the login daemon
+update: ## Pull latest, refresh deps, verify models, restart the scheduled ingest agent
 	DENDR_VENV=$(DENDR_VENV) scripts/update.sh
 
 ## --- Day to day --------------------------------------------------------------
@@ -31,10 +31,6 @@ update: ## Pull latest, refresh deps, verify models, restart the login daemon
 .PHONY: ingest
 ingest: ## Run a single ingest cycle
 	$(DENDR) ingest
-
-.PHONY: daemon
-daemon: ## Watch Daily/ and auto-ingest on changes (foreground)
-	$(DENDR) daemon
 
 .PHONY: serve
 serve: ## Start the search server on localhost:7777
@@ -62,10 +58,10 @@ models-verify: ## Check SHA256 integrity of downloaded models
 models-list: ## Show model status table
 	$(DENDR) models list
 
-## --- Login daemon (launchd) ---------------------------------------------------
+## --- Scheduled ingest (launchd) -------------------------------------------------
 
 .PHONY: autostart-install
-autostart-install: ## Run the daemon on login via a macOS LaunchAgent
+autostart-install: ## Run ingest on a schedule via a macOS LaunchAgent
 	$(DENDR) autostart install
 
 .PHONY: autostart-status
