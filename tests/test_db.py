@@ -154,6 +154,25 @@ def test_get_open_tasks_excludes_user_closed():
     assert ids == ["t1"]
 
 
+def test_get_open_tasks_truncation_keeps_oldest():
+    """Regression (F14): when open tasks exceed the limit, the OLDEST must be
+    retained (Task Review targets them), and the result stays newest-first."""
+    conn = _temp_db()
+    # Five open tasks on distinct dates, inserted newest-first to prove the
+    # kept set is chosen by date, not insertion order.
+    for day in (5, 4, 3, 2, 1):
+        upsert_block(
+            conn,
+            _make_block(block_id=f"t{day}", checkbox_state=CHECKBOX_OPEN),
+            f"2026-04-0{day}",
+        )
+
+    rows = get_open_tasks(conn, limit=3)
+    ids = [r["block_id"] for r in rows]
+    # The three OLDEST (04-01..04-03) survive; returned newest-first.
+    assert ids == ["t3", "t2", "t1"]
+
+
 def test_fts_finds_raw_text():
     conn = _temp_db()
     upsert_block(conn, _make_block(text="The quick brown fox jumps over"), "2026-04-08")

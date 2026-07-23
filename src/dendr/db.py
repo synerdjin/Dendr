@@ -576,14 +576,23 @@ def get_blocks_in_period(
 
 
 def get_open_tasks(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
-    """Open task blocks (checkbox open, not user-closed), newest first."""
+    """Open task blocks (checkbox open, not user-closed), newest first.
+
+    When more than `limit` tasks are open, the OLDEST are retained (they are the
+    ones the digest's Task Review exists to surface, and unlike fresh tasks they
+    appear nowhere else in the digest payload). The inner query truncates to the
+    oldest `limit`; the outer sort returns them newest-first for display.
+    """
     return conn.execute(
         """
-        SELECT * FROM blocks
-        WHERE checkbox_state = ?
-          AND (completion_status IS NULL OR completion_status = ?)
-        ORDER BY source_date DESC
-        LIMIT ?
+        SELECT * FROM (
+            SELECT * FROM blocks
+            WHERE checkbox_state = ?
+              AND (completion_status IS NULL OR completion_status = ?)
+            ORDER BY source_date ASC, block_id ASC
+            LIMIT ?
+        )
+        ORDER BY source_date DESC, block_id DESC
         """,
         (CHECKBOX_OPEN, COMPLETION_OPEN, limit),
     ).fetchall()

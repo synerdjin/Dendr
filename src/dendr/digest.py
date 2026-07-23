@@ -20,6 +20,7 @@ from pathlib import Path
 
 from dendr import db
 from dendr.config import Config
+from dendr.fsutil import atomic_write_text
 from dendr.templates import read as read_template
 
 # Prior-digest archive: keep last N digests and feed them back to Claude so
@@ -477,14 +478,14 @@ def generate_digest(
     if use_claude:
         prompt = build_synthesis_prompt(data)
         prompt_path = config.wiki_dir / "_digest_prompt.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
+        atomic_write_text(prompt_path, prompt)
         content = render_local_digest(data)
         logger.info("Claude synthesis prompt written to %s", prompt_path)
     else:
         content = render_local_digest(data)
 
     _archive_digest(config, digest_path)
-    digest_path.write_text(content, encoding="utf-8")
+    atomic_write_text(digest_path, content)
 
     this_period = data.get("this_period", {})
     carried_forward = data.get("carried_forward", {})
