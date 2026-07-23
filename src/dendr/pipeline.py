@@ -33,6 +33,7 @@ from dendr.models import (
     COMPLETION_DONE,
     COMPLETION_OPEN,
     COMPLETION_SNOOZED,
+    COMPLETION_TERMINAL,
     EVENT_CLOSED,
     EVENT_CREATED,
     REASON_ABANDONED,
@@ -128,14 +129,29 @@ def _track_checkbox_transition(
     if item.checkbox_state == CHECKBOX_CLOSED and old_state == CHECKBOX_OPEN:
         # A digest closure already logged a user-sourced close and ticked the
         # source checkbox; don't double-count that echo as an auto close.
-        if existing["completion_status"] in (COMPLETION_DONE, COMPLETION_ABANDONED):
+        if existing["completion_status"] in COMPLETION_TERMINAL:
             return
         db.insert_task_event(
             conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
         )
         TASKS_CLOSED.labels(source="auto").inc()
-    elif item.checkbox_state == CHECKBOX_OPEN and old_state == CHECKBOX_CLOSED:
-        db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
+    elif item.checkbox_state == CHECKBOX_OPEN:
+        # Reopened in the source note. A terminal user closure (done/abandoned)
+        # is stale once the user unchecks the source line — clear it, or the
+        # task stays invisible to get_open_tasks and the digest review forever.
+        # Covers closed→open (reopen after `done`) and none→open (reopen after
+        # `abandoned`, whose `- [-]` mark parses as checkbox_state=none).
+        if existing["completion_status"] in COMPLETION_TERMINAL:
+            db.update_completion_status(conn, item.block_id, None)
+            db.insert_task_event(
+                conn,
+                item.block_id,
+                EVENT_CREATED,
+                source_date,
+                reason=REASON_REOPENED,
+            )
+        elif old_state == CHECKBOX_CLOSED:
+            db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
 
 
 def _embed_all(
@@ -270,6 +286,7 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
 
     try:
         text = digest_path.read_text(encoding="utf-8")
+        digest_mtime = digest_path.stat().st_mtime
     except OSError as e:
         logger.warning("Could not read digest for closures: %s", e)
         return 0
@@ -281,6 +298,12 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     existing = db.get_blocks(conn, [c.block_id for c in closures])
     applied = 0
     today = datetime.now().strftime("%Y-%m-%d")
+    # Markers carry no timestamp, so the digest file's mtime stands in for
+    # "when the user last asserted these closures". A source-checkbox reopen
+    # logged after that is newer information and wins over a stale marker.
+    # Compared as strings against task_events.created_at — both sides must
+    # stay naive-local ISO format for the ordering to hold.
+    digest_edited_at = datetime.fromtimestamp(digest_mtime).isoformat()
 
     for closure in closures:
         row = existing.get(closure.block_id)
@@ -294,6 +317,11 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
 
         if row["completion_status"] == new_completion:
             continue
+
+        if new_completion in COMPLETION_TERMINAL:
+            reopened_at = db.get_latest_reopen_event_time(conn, closure.block_id)
+            if reopened_at is not None and reopened_at > digest_edited_at:
+                continue
 
         db.update_completion_status(conn, closure.block_id, new_completion)
 

@@ -17,7 +17,13 @@ from pathlib import Path
 
 import numpy as np
 
-from dendr.models import CHECKBOX_OPEN, COMPLETION_OPEN, SOURCE_AUTO, Block
+from dendr.models import (
+    CHECKBOX_OPEN,
+    COMPLETION_OPEN,
+    REASON_REOPENED,
+    SOURCE_AUTO,
+    Block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +387,23 @@ def insert_task_event(
             datetime.now().isoformat(),
         ),
     )
+
+
+def get_latest_reopen_event_time(conn: sqlite3.Connection, block_id: str) -> str | None:
+    """created_at of the newest auto-sourced reopen event for a block, if any.
+
+    Used by closure reconciliation to detect that a source-checkbox reopen
+    postdates the digest's closure marker.
+    """
+    row = conn.execute(
+        """
+        SELECT created_at FROM task_events
+         WHERE block_id = ? AND reason = ? AND source = ?
+         ORDER BY id DESC LIMIT 1
+        """,
+        (block_id, REASON_REOPENED, SOURCE_AUTO),
+    ).fetchone()
+    return row["created_at"] if row else None
 
 
 def update_completion_status(
