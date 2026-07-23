@@ -442,6 +442,42 @@ def test_mark_dead_moves_item_out_of_processing():
     assert queue.recover_stale(config) == 0
 
 
+def test_dead_lettered_block_not_reenqueued_until_edited():
+    """Regression (F9): a poison block's hash is never committed, so the scan
+    keeps flagging it dirty. queue_dirty_blocks must not re-enqueue it every
+    cycle — but an edit (new hash) clears the record and retries."""
+    from dendr import queue
+    from dendr.pipeline import queue_dirty_blocks
+
+    config = _temp_vault()
+    config.ensure_dirs()
+
+    from dataclasses import replace
+
+    block = Block(
+        block_id="dendr-poison",
+        source_file="Daily/2026-04-01.md",
+        line_start=0,
+        line_end=0,
+        text="bad block",
+        block_hash="h1",
+    )
+    # First pass enqueues it; simulate a commit failure that dead-letters it.
+    assert queue_dirty_blocks(config, [block]) == 1
+    assert queue.claim_for_processing(config, "dendr-poison")
+    queue.mark_dead(config, "dendr-poison")
+
+    # Next scan still sees it dirty (hash uncommitted) — must NOT re-enqueue.
+    assert queue_dirty_blocks(config, [block]) == 0
+    assert queue.pending_count(config) == 0
+
+    # The user edits the block: different hash → fresh attempt, record cleared.
+    edited = replace(block, text="fixed block", block_hash="h2")
+    assert queue_dirty_blocks(config, [edited]) == 1
+    assert queue.pending_count(config) == 1
+    assert not (config.dead_dir / "dendr-poison.json").exists()
+
+
 # ── iCloud conflicted-copy filtering (F2) ─────────────────────────────
 
 

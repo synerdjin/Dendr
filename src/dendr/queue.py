@@ -96,6 +96,23 @@ def mark_dead(config: Config, block_id: str) -> None:
         shutil.move(str(src), str(dst))
 
 
+def get_dead_hashes(config: Config) -> dict[str, str]:
+    """Map block_id -> block_hash for dead-lettered (poison) items.
+
+    Lets the scan phase avoid re-enqueuing a block whose exact content already
+    failed — without a hash match, a poison block re-embeds and re-deads on
+    every cycle forever, since its hash is never committed to `blocks`.
+    """
+    return {item.block_id: item.block_hash for item in _load_queue_dir(config.dead_dir)}
+
+
+def clear_dead(config: Config, block_id: str) -> None:
+    """Drop a block's dead-letter record so an edited version can retry."""
+    path = config.dead_dir / f"{block_id}.json"
+    if path.exists():
+        path.unlink()
+
+
 def get_pending(config: Config) -> list[QueueItem]:
     """List all pending items (sorted for deterministic processing order)."""
     return _load_queue_dir(config.pending_dir, sort=True)

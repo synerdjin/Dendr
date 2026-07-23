@@ -142,8 +142,20 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
 
 
 def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
-    """Enqueue dirty blocks."""
-    for block in dirty_blocks:
+    """Enqueue dirty blocks, skipping ones already dead-lettered unchanged.
+
+    A block that poisoned the queue is moved to dead/ but its hash is never
+    committed to `blocks`, so the scan keeps flagging it dirty. Without this
+    guard it would re-embed and re-dead on every cycle. A dead block whose
+    content changed (different hash) gets a fresh attempt.
+    """
+    dead = queue.get_dead_hashes(config)
+    # Skip blocks whose exact content already dead-lettered; a changed hash
+    # (edited since it died) falls through to a fresh attempt.
+    to_queue = [b for b in dirty_blocks if dead.get(b.block_id) != b.block_hash]
+    for block in to_queue:
+        if block.block_id in dead:
+            queue.clear_dead(config, block.block_id)  # edited since it died; retry
         queue.enqueue(
             config,
             QueueItem(
@@ -156,7 +168,7 @@ def queue_dirty_blocks(config: Config, dirty_blocks: list[Block]) -> int:
                 attachment_type=block.attachment_type,
             ),
         )
-    return len(dirty_blocks)
+    return len(to_queue)
 
 
 def _track_checkbox_transition(
