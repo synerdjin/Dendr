@@ -146,21 +146,40 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
     # Migration: recreate blocks_vec with cosine distance metric if an older
     # DB created it with the sqlite-vec default (L2). Detected by inspecting
-    # the CREATE statement for the `distance_metric` keyword. Two concurrent
-    # init_schema callers (e.g. ingest + search server on fresh upgrade) may
-    # both attempt the DROP — WAL serializes writes and the OperationalError
-    # from the loser is swallowed at debug level below.
+    # the CREATE statement for the `distance_metric` keyword. The drop, recreate,
+    # and hash-blank run in one transaction so an interrupted upgrade can't land
+    # the recreate (which flips sqlite_master to cosine, so the migration never
+    # re-fires) without the hash-blank (which forces the re-embed) — that split
+    # would leave semantic search silently empty. Two concurrent init_schema
+    # callers (e.g. ingest + search server) serialize on the write lock; the
+    # loser re-runs the now-idempotent migration and its OperationalError, if
+    # any, is swallowed at debug level below.
     try:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='blocks_vec'"
         ).fetchone()
         if row and "distance_metric" not in (row[0] or "").lower():
             logger.info("Migrating blocks_vec to cosine distance metric")
-            conn.execute("DROP TABLE blocks_vec")
-            conn.execute(
-                "CREATE VIRTUAL TABLE blocks_vec "
-                "USING vec0(embedding float[768] distance_metric=cosine, block_id text)"
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("DROP TABLE blocks_vec")
+                conn.execute(
+                    "CREATE VIRTUAL TABLE blocks_vec "
+                    "USING vec0(embedding float[768] distance_metric=cosine, block_id text)"
+                )
+                # The drop discarded every stored embedding; blanking the hashes
+                # makes the next ingest re-embed all blocks.
+                reset = mark_all_blocks_dirty(conn)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            if reset:
+                logger.warning(
+                    "blocks_vec migrated: dropped embeddings for %d blocks — "
+                    "run `dendr ingest` to re-embed",
+                    reset,
+                )
     except sqlite3.OperationalError as e:
         logger.debug("blocks_vec migration skipped: %s", e)
 
@@ -197,6 +216,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 # ── Block operations ──────────────────────────────────────────────────
+
+
+def mark_all_blocks_dirty(conn: sqlite3.Connection) -> int:
+    """Blank every block's hash so the next ingest treats it as changed.
+
+    Shared by `dendr reprocess` and the blocks_vec migration — both need every
+    block re-embedded, and dirtiness is derived from a hash mismatch against the
+    file. Returns the number of rows reset.
+    """
+    return conn.execute("UPDATE blocks SET block_hash = ''").rowcount
 
 
 def upsert_block(conn: sqlite3.Connection, block: Block, source_date: str) -> int:

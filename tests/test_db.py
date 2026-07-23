@@ -268,6 +268,80 @@ def test_init_schema_drops_legacy_private_column():
     assert "private" not in cols_again
 
 
+def _vec_available(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE _vec_probe USING vec0(embedding float[4])")
+        conn.execute("DROP TABLE _vec_probe")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def test_blocks_vec_migration_reembeds(tmp_path):
+    """Regression (F13): migrating blocks_vec from L2 to cosine drops every
+    embedding, so init_schema must blank block_hash to force a re-embed —
+    otherwise semantic search stays silently empty until a manual reprocess."""
+    import pytest
+
+    path = tmp_path / "state.sqlite"
+    conn = connect(path)
+    if not _vec_available(conn):
+        pytest.skip("sqlite-vec not available")
+
+    init_schema(conn)
+    upsert_block(conn, _make_block(block_hash="orig"), "2026-04-08")
+
+    # Recreate blocks_vec the pre-v4 way: default (L2) metric, no distance_metric.
+    conn.execute("DROP TABLE blocks_vec")
+    conn.execute(
+        "CREATE VIRTUAL TABLE blocks_vec "
+        "USING vec0(embedding float[768], block_id text)"
+    )
+
+    init_schema(conn)  # detects L2 → migrates to cosine + blanks hashes
+
+    vec_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='blocks_vec'"
+    ).fetchone()[0]
+    assert "distance_metric" in vec_sql.lower()
+    assert get_block(conn, "dendr-test-1")["block_hash"] == ""
+
+
+def test_blocks_vec_migration_is_atomic_on_failure(tmp_path, monkeypatch):
+    """If the hash-blank fails mid-migration, the whole thing rolls back so the
+    L2 table remains and the migration re-fires next time — rather than landing
+    cosine with stale hashes, which would leave semantic search silently empty."""
+    import pytest
+
+    from dendr import db as dbmod
+
+    path = tmp_path / "state.sqlite"
+    conn = connect(path)
+    if not _vec_available(conn):
+        pytest.skip("sqlite-vec not available")
+
+    init_schema(conn)
+    upsert_block(conn, _make_block(block_hash="orig"), "2026-04-08")
+    conn.execute("DROP TABLE blocks_vec")
+    conn.execute(
+        "CREATE VIRTUAL TABLE blocks_vec "
+        "USING vec0(embedding float[768], block_id text)"
+    )
+
+    def boom(_conn):
+        raise sqlite3.OperationalError("simulated crash mid-migration")
+
+    monkeypatch.setattr(dbmod, "mark_all_blocks_dirty", boom)
+    init_schema(conn)  # migration fails, rolls back; error swallowed at debug
+
+    # The DROP+CREATE were rolled back: blocks_vec is still L2, hash untouched.
+    vec_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='blocks_vec'"
+    ).fetchone()[0]
+    assert "distance_metric" not in vec_sql.lower()
+    assert get_block(conn, "dendr-test-1")["block_hash"] == "orig"
+
+
 # ── Feedback tests ────────────────────────────────────────────────────
 
 

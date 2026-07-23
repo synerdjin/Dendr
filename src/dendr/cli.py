@@ -150,7 +150,7 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     import shutil
 
     from dendr.config import Config
-    from dendr.db import connect, init_schema
+    from dendr.db import connect, init_schema, mark_all_blocks_dirty
     from dendr.llm import LLMClient
     from dendr.pipeline import run_ingest
 
@@ -164,8 +164,7 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
 
     # Blank the hash so every block is treated as dirty on next ingest.
     # completion_status is preserved so user closures survive re-ingest.
-    count = conn.execute("SELECT COUNT(*) as n FROM blocks").fetchone()["n"]
-    conn.execute("UPDATE blocks SET block_hash = ''")
+    count = mark_all_blocks_dirty(conn)
     click.echo(f"Marked {count} blocks as dirty")
 
     # Clear done queue
