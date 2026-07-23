@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
+
+import numpy as np
 
 from dendr.config import Config
 from dendr.db import (
     connect,
     get_block,
+    get_open_tasks,
     init_schema,
     update_completion_status,
     upsert_block,
@@ -20,7 +24,7 @@ from dendr.models import (
     Block,
     QueueItem,
 )
-from dendr.pipeline import _track_checkbox_transition, reconcile_closures
+from dendr.pipeline import _track_checkbox_transition, reconcile_closures, run_ingest
 
 
 SOURCE_DATE = "2026-04-01"
@@ -300,6 +304,121 @@ def test_reconcile_closures_missing_block():
     config = _temp_vault(digest_text=digest)
     conn = _temp_db()
     assert reconcile_closures(config, conn) == 0
+
+
+# ── Reopening a user-closed task in the source note ───────────────────
+
+
+class _StubLLM:
+    """Deterministic embeddings so run_ingest works without model weights."""
+
+    def embed(self, text, kind="document"):
+        return np.zeros(768, dtype=np.float32)
+
+    def embed_batch(self, texts, kind="document"):
+        return [self.embed(t) for t in texts]
+
+
+def _close_via_digest(config: Config, conn, note: Path, block_id: str) -> None:
+    """Drive the full digest-close flow: marker → reconcile → write-back echo."""
+    (config.wiki_dir / "digest.md").write_text(
+        f"- [x] **task** <!-- closure:{block_id} status:open -->\n",
+        encoding="utf-8",
+    )
+    run_ingest(config, conn, _StubLLM())
+    row = get_block(conn, block_id)
+    assert row["completion_status"] == "done"
+    assert note.read_text().startswith("- [x]")
+
+
+def test_reopen_in_source_after_digest_close_restores_open_task():
+    """Unchecking the source checkbox after a digest close must make the task
+    queryable as open again — not leave completion_status stuck at 'done'."""
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] ship the report ^dendr-ro\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+
+    _close_via_digest(config, conn, note, "dendr-ro")
+    (config.wiki_dir / "digest.md").unlink()
+
+    # User reopens the task in the daily note.
+    note.write_text("- [ ] ship the report ^dendr-ro\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+
+    row = get_block(conn, "dendr-ro")
+    assert row["checkbox_state"] == "open"
+    assert row["completion_status"] is None
+    assert [r["block_id"] for r in get_open_tasks(conn)] == ["dendr-ro"]
+
+    ev = conn.execute(
+        "SELECT event_type, reason, source FROM task_events "
+        "WHERE block_id = ? ORDER BY id DESC LIMIT 1",
+        ("dendr-ro",),
+    ).fetchone()
+    assert ev["event_type"] == "created"
+    assert ev["reason"] == "reopened"
+    assert ev["source"] == "auto"
+
+
+def test_stale_digest_marker_does_not_reclose_reopened_task():
+    """A closure marker left in digest.md must not fight a later source reopen:
+    subsequent ingests may not re-close the task or re-tick the checkbox."""
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] ship the report ^dendr-st\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+
+    _close_via_digest(config, conn, note, "dendr-st")
+
+    # Digest (with its marker) predates the reopen; make mtime reflect that.
+    digest_path = config.wiki_dir / "digest.md"
+    old = digest_path.stat().st_mtime - 3600
+    os.utime(digest_path, (old, old))
+
+    # User reopens in the daily note; the stale marker is still in digest.md.
+    note.write_text("- [ ] ship the report ^dendr-st\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+    run_ingest(config, conn, _StubLLM())
+
+    row = get_block(conn, "dendr-st")
+    assert row["checkbox_state"] == "open"
+    assert row["completion_status"] is None
+    assert note.read_text().startswith("- [ ] ")
+    assert [r["block_id"] for r in get_open_tasks(conn)] == ["dendr-st"]
+
+
+def test_fresh_digest_edit_after_reopen_can_reclose():
+    """A digest edit newer than the reopen is a genuine user decision and
+    must still apply."""
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("- [ ] ship the report ^dendr-rc\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+
+    _close_via_digest(config, conn, note, "dendr-rc")
+
+    note.write_text("- [ ] ship the report ^dendr-rc\n", encoding="utf-8")
+    run_ingest(config, conn, _StubLLM())
+    assert get_block(conn, "dendr-rc")["completion_status"] is None
+
+    # User re-closes by editing the digest again (mtime now after the reopen).
+    digest_path = config.wiki_dir / "digest.md"
+    new = digest_path.stat().st_mtime + 3600
+    os.utime(digest_path, (new, new))
+    run_ingest(config, conn, _StubLLM())
+
+    assert get_block(conn, "dendr-rc")["completion_status"] == "done"
+    assert note.read_text().startswith("- [x]")
 
 
 # ── Dead-letter queue ─────────────────────────────────────────────────

@@ -18,6 +18,11 @@ COMPLETION_DONE = "done"
 COMPLETION_ABANDONED = "abandoned"
 COMPLETION_SNOOZED = "snoozed"
 
+# Terminal user closures — the statuses a source-checkbox reopen must clear.
+# Deliberately excludes `snoozed`: a snooze leaves the source checkbox open,
+# so no reopen transition can ever fire for it.
+COMPLETION_TERMINAL = frozenset({COMPLETION_DONE, COMPLETION_ABANDONED})
+
 # Values accepted in digest closure markers (`<!-- closure:... status:X -->`).
 # Maps to a completion_status + a task_event reason at reconcile time.
 CLOSURE_OPEN = "open"
