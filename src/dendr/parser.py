@@ -39,6 +39,11 @@ _FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
 # Top-level list item (not indented sub-items)
 _TOP_LEVEL_LIST_RE = re.compile(r"^- ")
 
+# Fenced-code-block delimiter (``` or ~~~, three or more). Inside a fence,
+# blank lines, headings, and list markers are literal code, not block
+# boundaries — so the whole fence stays one block and IDs never land inside it.
+_FENCE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})")
+
 # Attachment embed patterns: ![[file.pdf]], ![[image.png]], etc.
 _EMBED_RE = re.compile(r"!\[\[([^\]]+)\]\]")
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -93,11 +98,22 @@ def _split_into_raw_blocks(lines: list[str]) -> list[tuple[int, int, list[str]]]
     blocks: list[tuple[int, int, list[str]]] = []
     current_lines: list[str] = []
     start = 0
+    in_fence = False
 
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        if stripped.startswith("#") and current_lines:
+        is_fence = bool(_FENCE_RE.match(line))
+        if is_fence or in_fence:
+            # A fence delimiter, or any line inside a fence: never a block
+            # boundary — it's literal code. The delimiter also flips whether
+            # following lines are code or prose again.
+            if not current_lines:
+                start = i
+            current_lines.append(line)
+            if is_fence:
+                in_fence = not in_fence
+        elif stripped.startswith("#") and current_lines:
             blocks.append((start, i - 1, current_lines))
             current_lines = [line]
             start = i
@@ -212,7 +228,9 @@ def inject_block_ids(file_path: Path, blocks: list[Block]) -> bool:
     lines = text.split("\n")
     modified = False
 
-    for block in blocks:
+    # Descending line_end so that inserting a standalone ref line for a fenced
+    # block (below) never shifts the indices of blocks we haven't handled yet.
+    for block in sorted(blocks, key=lambda b: b.line_end, reverse=True):
         last_line_idx = block.line_end
         if last_line_idx >= len(lines):
             continue
@@ -220,7 +238,15 @@ def inject_block_ids(file_path: Path, blocks: list[Block]) -> bool:
         if _BLOCK_REF_RE.search(last_line):
             continue
 
-        lines[last_line_idx] = last_line.rstrip() + f" ^{block.block_id}"
+        if _FENCE_RE.match(last_line):
+            # The block ends on a closing code fence. Appending ` ^id` there
+            # would add trailing content the fence syntax forbids, breaking the
+            # code block. Obsidian's own convention is a ref on its own line
+            # just below the fence; the leading space keeps it matchable by
+            # _BLOCK_REF_RE on the next parse so it round-trips.
+            lines.insert(last_line_idx + 1, f" ^{block.block_id}")
+        else:
+            lines[last_line_idx] = last_line.rstrip() + f" ^{block.block_id}"
         modified = True
 
     if modified:

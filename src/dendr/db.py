@@ -424,19 +424,36 @@ def update_completion_status(
 # ── Search ────────────────────────────────────────────────────────────
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Turn free-form user text into a safe FTS5 MATCH expression.
+
+    A raw user string handed to FTS5 MATCH is interpreted as query syntax, so
+    a stray `"`, `*`, `:`, `(`, or a leading `-` raises OperationalError and
+    500s the search. We instead quote each whitespace-separated token as an
+    FTS5 phrase (doubling any embedded `"`), which makes every character a
+    literal and the whole thing an implicit-AND of terms — no syntax to trip
+    over. Returns "" when the query has no usable tokens.
+    """
+    tokens = query.split()
+    return " ".join('"' + tok.replace('"', '""') + '"' for tok in tokens)
+
+
 def search_blocks_fts(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 50,
 ) -> list[sqlite3.Row]:
     """Full-text search across blocks."""
+    match = _sanitize_fts_query(query)
+    if not match:
+        return []
     q = """
         SELECT b.* FROM blocks b
         JOIN blocks_fts f ON b.id = f.rowid
         WHERE blocks_fts MATCH ?
         LIMIT ?
     """
-    return conn.execute(q, (query, limit)).fetchall()
+    return conn.execute(q, (match, limit)).fetchall()
 
 
 def search_blocks_semantic(

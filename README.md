@@ -130,7 +130,8 @@ using the default.
 
 ```
 Vault/                          (iCloud-synced)
-  Daily/YYYY-MM-DD.md           your raw notes (never modified by Dendr)
+  Daily/YYYY-MM-DD.md           your raw notes (Dendr appends `^dendr-…` block
+                                refs and, on digest closure, ticks task checkboxes)
   Wiki/
     schema.md                   block schema (raw text + minimal metadata)
     log.md                      append-only activity log
