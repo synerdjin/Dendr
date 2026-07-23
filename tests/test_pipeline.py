@@ -440,3 +440,78 @@ def test_mark_dead_moves_item_out_of_processing():
 
     # recover_stale should not pull a dead item back to pending.
     assert queue.recover_stale(config) == 0
+
+
+# ── iCloud conflicted-copy filtering (F2) ─────────────────────────────
+
+
+def test_conflicted_copy_is_not_ingested():
+    """An iCloud "<date> 2.md" conflict shares block refs with the canonical
+    note; ingesting it would flip-flop the stored text. It must be skipped."""
+    from dendr.db import get_block
+
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("decided to STAY at my job ^dendr-cc\n", encoding="utf-8")
+    # iCloud drops an older-content conflicted copy carrying the same ref.
+    conflict = config.daily_dir / "2026-04-01 2.md"
+    conflict.write_text("thinking about quitting ^dendr-cc\n", encoding="utf-8")
+
+    run_ingest(config, conn, _StubLLM())
+    run_ingest(config, conn, _StubLLM())  # a second cycle must not flip it
+
+    assert get_block(conn, "dendr-cc")["text"] == "decided to STAY at my job"
+
+
+def test_is_conflicted_copy_patterns():
+    from dendr.pipeline import _is_conflicted_copy
+
+    assert _is_conflicted_copy(Path("Daily/2026-04-01 2.md"))
+    assert _is_conflicted_copy(Path("Daily/2026-04-01 (1).md"))
+    assert _is_conflicted_copy(Path("Daily/2026-04-01 (conflicted copy 2026-04-02).md"))
+    # Canonical daily notes are never treated as conflicts.
+    assert not _is_conflicted_copy(Path("Daily/2026-04-01.md"))
+
+
+def test_conflict_shaped_name_with_unique_refs_is_still_ingested():
+    """The skip is keyed on a genuine block-ref clash, not the filename alone:
+    a conflict-shaped name whose refs are unique must still be ingested."""
+    from dendr.db import get_block
+
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    canonical = config.daily_dir / "2026-04-01.md"
+    canonical.write_text("real note ^dendr-real\n", encoding="utf-8")
+    # A "(2)"-shaped name, but with its OWN unique ref — not a conflict copy.
+    other = config.daily_dir / "2026-04-01 (2).md"
+    other.write_text("a different note ^dendr-other\n", encoding="utf-8")
+
+    run_ingest(config, conn, _StubLLM())
+
+    assert get_block(conn, "dendr-real")["text"] == "real note"
+    assert get_block(conn, "dendr-other")["text"] == "a different note"
+
+
+def test_conflicted_copy_skipped_regardless_of_scan_order():
+    """Even when the conflict copy sorts first alphabetically, block-ref
+    ownership (not sort position) decides which file wins."""
+    from dendr.db import get_block
+
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    # "<date> 2.md" sorts before "<date>.md" (space < dot), so a naive
+    # first-seen-wins would pick the conflict. _scan_order must prevent that.
+    canonical = config.daily_dir / "2026-04-01.md"
+    canonical.write_text("keep this ^dendr-x\n", encoding="utf-8")
+    conflict = config.daily_dir / "2026-04-01 2.md"
+    conflict.write_text("stale copy ^dendr-x\n", encoding="utf-8")
+
+    run_ingest(config, conn, _StubLLM())
+    assert get_block(conn, "dendr-x")["text"] == "keep this"

@@ -338,3 +338,49 @@ def test_close_task_in_source_exact_block_id_match():
     lines = note.read_text().split("\n")
     assert lines[0] == "- [ ] a ^dendr-xwb"  # untouched
     assert lines[1] == "- [x] b ✅ 2026-06-26 ^dendr-wb"
+
+
+# ── Fenced code blocks (F3) ───────────────────────────────────────────
+
+
+def test_fenced_code_block_stays_one_block():
+    """A blank line inside a ``` fence must not split it into pieces."""
+    content = (
+        "Debugging the deploy script:\n"
+        "\n"
+        "```bash\n"
+        "export FOO=1\n"
+        "\n"
+        "./deploy.sh --prod\n"
+        "```\n"
+    )
+    note = _write_note(content)
+    blocks = parse_daily_note(note)
+    # One prose block + exactly one code block (not three fragments).
+    code_blocks = [b for b in blocks if "deploy.sh" in b.text]
+    assert len(code_blocks) == 1
+    assert "export FOO=1" in code_blocks[0].text
+    assert "./deploy.sh --prod" in code_blocks[0].text
+
+
+def test_inject_never_writes_id_inside_a_fence():
+    """Block-ref injection must not land inside fenced code, and must not
+    break the closing fence — it goes on its own line just after it."""
+    content = "```bash\nexport FOO=1\n\n./deploy.sh --prod\n```\n"
+    note = _write_note(content)
+    blocks = parse_daily_note(note)
+    inject_block_ids(note, blocks)
+    out = note.read_text()
+
+    # The code lines are untouched — no ^dendr-… injected mid-fence.
+    assert "export FOO=1\n" in out
+    assert "./deploy.sh --prod\n" in out
+    assert "^dendr-" not in out.split("```", 2)[1]  # nothing inside the fence
+    # A closing fence line is exactly ``` (no trailing ref appended).
+    assert any(line.strip() == "```" for line in out.split("\n"))
+
+    # Re-parsing round-trips: the ref is recognized, so no second id is added.
+    blocks2 = parse_daily_note(note)
+    injected_again = inject_block_ids(note, blocks2)
+    assert injected_again is False
+    assert note.read_text() == out

@@ -55,6 +55,37 @@ logger = logging.getLogger(__name__)
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
+# A sync-conflict copy ("<note> 2.md", "<note> (1).md", ".sync-conflict-…") is a
+# byte copy of a real note and carries the SAME `^dendr-<ulid>` refs, so
+# ingesting it alongside the original makes each block's stored text flip-flop
+# between the two files every cycle. We don't trust any single vendor's naming
+# to catch it — scan_daily_notes enforces the real invariant (a block_id comes
+# from only one file per scan). This pattern only *sorts* conflict-shaped names
+# last so the canonical note claims its refs first; a note whose refs are
+# actually unique is still ingested even if its name happens to match here.
+_CONFLICT_RE = re.compile(
+    r"(?:"
+    r"conflicted copy"  # Dropbox / generic sync services
+    r"|\s\(\d+\)$"  # Obsidian Sync: "2026-07-01 (1)"
+    rf"|{_DATE_RE.pattern}\s+\d+$"  # iCloud: "2026-07-01 2"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_conflicted_copy(path: Path) -> bool:
+    """True if `path` looks like a sync-conflict duplicate of a daily note."""
+    return _CONFLICT_RE.search(path.stem) is not None
+
+
+def _scan_order(path: Path) -> tuple[bool, str]:
+    """Sort key: canonical notes before conflict-shaped names, then by name.
+
+    On a cold start (neither file recorded yet) this decides which of two files
+    sharing a block ref is treated as canonical — the non-conflict-shaped name.
+    """
+    return (_is_conflicted_copy(path), path.name)
+
 
 def _extract_source_date(source_file: str) -> str:
     """Extract YYYY-MM-DD from a daily note filename."""
@@ -74,9 +105,33 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
     if not daily_dir.exists():
         return dirty_blocks
 
-    for note_path in sorted(daily_dir.glob("*.md")):
+    claimed: dict[str, str] = {}  # block_id -> file that first claimed it
+    for note_path in sorted(daily_dir.glob("*.md"), key=_scan_order):
         blocks = parse_daily_note(note_path, config.attachments_dir)
+
+        # If a ref here was already claimed by another file this scan, this is a
+        # sync-conflict copy of that file — skip it (don't inject into it or
+        # ingest it) so its stale text can't overwrite the canonical block.
+        clash = next(
+            (
+                b.block_id
+                for b in blocks
+                if claimed.get(b.block_id, str(note_path)) != str(note_path)
+            ),
+            None,
+        )
+        if clash is not None:
+            logger.warning(
+                "Skipping %s: block ref %s already claimed by %s (sync-conflict copy?)",
+                note_path.name,
+                clash,
+                claimed[clash],
+            )
+            continue
+
         inject_block_ids(note_path, blocks)
+        for block in blocks:
+            claimed[block.block_id] = str(note_path)
 
         stored = db.get_block_hashes(conn, [b.block_id for b in blocks])
         for block in blocks:

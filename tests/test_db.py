@@ -177,6 +177,26 @@ def test_fts_no_stale_tokens_on_update():
     assert len(search_blocks_fts(conn, "panda")) == 1
 
 
+def test_fts_special_characters_do_not_raise():
+    """Regression (F10): FTS5 syntax chars in a user query must not crash."""
+    conn = _temp_db()
+    upsert_block(
+        conn, _make_block(text='meeting about the "roadmap" (Q3)'), "2026-04-08"
+    )
+    # Each of these would raise sqlite3.OperationalError against a raw MATCH.
+    for q in ['"unbalanced', "roadmap*", "-foo", "(Q3", "NEAR:", "a AND", ""]:
+        rows = search_blocks_fts(conn, q)
+        assert isinstance(rows, list)  # no exception, well-formed result
+
+
+def test_fts_quoted_query_still_matches():
+    """Sanitizing to phrase tokens must not break ordinary term search."""
+    conn = _temp_db()
+    upsert_block(conn, _make_block(text="quarterly roadmap review"), "2026-04-08")
+    assert len(search_blocks_fts(conn, "roadmap review")) == 1
+    assert len(search_blocks_fts(conn, '"roadmap"')) == 1
+
+
 # ── Schema migration ─────────────────────────────────────────────────
 
 
