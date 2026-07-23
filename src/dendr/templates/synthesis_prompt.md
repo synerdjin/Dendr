@@ -159,6 +159,22 @@ itself; examine whether their time matched their words. Skip entirely if
 which look abandoned, which deserve a direct "is this still live?" question.
 Don't list everything. Pick the 3-5 that matter most.
 
+**Task Review** — REQUIRED whenever `carried_forward.open_tasks` is non-empty.
+This section round-trips: the user edits it in `digest.md` to close tasks, and
+the next ingest reconciles those edits — so you MUST emit one line for EVERY
+carried-forward open task, each carrying its closure marker exactly in this
+format (the HTML comment holds the `block_id` and is the source of truth — never
+drop, reword, or merge these markers):
+
+    - [ ] **<task's first line, checkbox stripped>** — *<age, e.g. written 3w ago>* <!-- closure:<block_id> status:open -->
+
+Order oldest-first, and group under `### 1m+ old` / `### 2-4w old` / `### 1-2w
+old` subheadings if there are many. The user flips `[ ]`→`[x]` to mark a task
+done, or edits `status:` to `done`, `abandoned`, `snoozed`, or `still-live`; a
+`snoozed` task may append `until:YYYY-MM-DD` to set its own wake date (otherwise
+it resurfaces after a week). Keep your commentary in "Still hanging" above — the
+marker lines themselves stay clean so they parse cleanly on the next ingest.
+
 **Reframes & experiments** — THE HIGHEST VALUE SECTION. For each observation:
 Observation (cite dated block) → pattern (optionally cross-theme, optionally
 referencing `prior_digests`) → challenge (the blind spot or rationalization) →

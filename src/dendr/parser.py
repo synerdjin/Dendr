@@ -390,6 +390,7 @@ _CLOSURE_RE = re.compile(
     r".*?"  # task label
     r"<!--\s*closure:(?P<block_id>[\w-]+)"  # block_id
     rf"(?:\s+status:(?P<status>{_CLOSURE_STATUS_ALT}))?"
+    r"(?:\s+until:(?P<until>\d{4}-\d{2}-\d{2}))?"  # optional snooze wake date
     r"\s*-->",
     re.MULTILINE,
 )
@@ -402,6 +403,7 @@ class TaskClosure:
     block_id: str
     status: str  # open | done | abandoned | snoozed | still-live
     checkbox_checked: bool
+    wake_date: str | None = None  # `until:` date on a snooze; None otherwise
 
 
 def parse_closures(digest_text: str) -> list[TaskClosure]:
@@ -438,6 +440,7 @@ def parse_closures(digest_text: str) -> list[TaskClosure]:
                 block_id=block_id,
                 status=status,
                 checkbox_checked=checked,
+                wake_date=match.group("until"),
             )
         )
 

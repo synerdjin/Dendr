@@ -84,7 +84,9 @@ def _render_task_review(tasks: list[dict]) -> str:
     lines.append("")
     lines.append(
         "*Flip `[ ]` to `[x]` to close, or edit `status:` to "
-        "`done`, `abandoned`, `snoozed`, or `still-live`. "
+        "`done`, `abandoned`, `snoozed`, or `still-live`. Add "
+        "`until:YYYY-MM-DD` after `snoozed` to set a wake date "
+        "(otherwise it resurfaces in a week). "
         "The next ingest reconciles and ticks the source daily note for you.*"
     )
     lines.append("")
