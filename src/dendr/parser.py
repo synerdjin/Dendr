@@ -17,6 +17,7 @@ from pathlib import Path
 
 import ulid
 
+from dendr.fsutil import atomic_write_text
 from dendr.models import (
     CHECKBOX_CLOSED,
     CHECKBOX_NONE,
@@ -250,7 +251,7 @@ def inject_block_ids(file_path: Path, blocks: list[Block]) -> bool:
         modified = True
 
     if modified:
-        file_path.write_text("\n".join(lines), encoding="utf-8")
+        atomic_write_text(file_path, "\n".join(lines))
 
     return modified
 
@@ -366,7 +367,7 @@ def close_task_in_source(
 
     lines[cb_idx] = new_line
     try:
-        file_path.write_text("\n".join(lines), encoding="utf-8")
+        atomic_write_text(file_path, "\n".join(lines))
     except OSError:
         return False
     return True
