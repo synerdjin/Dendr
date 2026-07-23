@@ -14,6 +14,7 @@ from dendr.db import (
     get_block,
     get_open_tasks,
     init_schema,
+    set_snooze,
     update_completion_status,
     upsert_block,
 )
@@ -141,6 +142,40 @@ def test_non_task_block_logs_nothing():
     )
     rows = conn.execute("SELECT COUNT(*) as n FROM task_events").fetchone()
     assert rows["n"] == 0
+
+
+def test_none_to_open_logs_created():
+    """Regression (F11): adding a checkbox to a plain block (none->open) is a
+    task creation and must be recorded."""
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_NONE), SOURCE_DATE)
+    existing = get_block(conn, "t1")
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_OPEN), SOURCE_DATE, existing
+    )
+    rows = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
+        ("t1",),
+    ).fetchall()
+    assert [r["event_type"] for r in rows] == ["created"]
+    assert rows[0]["reason"] is None  # a plain creation, not a reopen
+
+
+def test_none_to_closed_logs_created_and_closed():
+    """Regression (F11): a plain block turned straight into a done task
+    (none->closed) is both a creation and a close."""
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("t1", CHECKBOX_NONE), SOURCE_DATE)
+    existing = get_block(conn, "t1")
+    _track_checkbox_transition(
+        conn, _make_queue_item("t1", CHECKBOX_CLOSED), SOURCE_DATE, existing
+    )
+    rows = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id",
+        ("t1",),
+    ).fetchall()
+    assert [r["event_type"] for r in rows] == ["created", "closed"]
+    assert rows[1]["reason"] == "done"
 
 
 # ── reconcile_closures ────────────────────────────────────────────────
@@ -274,6 +309,103 @@ def test_reconcile_closures_snoozed_leaves_source_open():
 
     assert reconcile_closures(config, conn) == 1
     assert note.read_text() == "- [ ] later ^dendr-sn\n"  # untouched
+
+
+# -- Snooze wake (F5) --
+
+
+def test_snooze_sets_default_wake_a_week_out():
+    from datetime import datetime, timedelta
+
+    config = _temp_vault(
+        digest_text="- [ ] **Later** <!-- closure:dendr-sn status:snoozed -->"
+    )
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    row = get_block(conn, "dendr-sn")
+    assert row["completion_status"] == "snoozed"
+    expected = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    assert row["snooze_until"] == expected
+    assert "dendr-sn" not in [r["block_id"] for r in get_open_tasks(conn)]
+
+
+def test_snooze_honours_explicit_until_date():
+    config = _temp_vault(
+        digest_text=(
+            "- [ ] **Later** <!-- closure:dendr-sn status:snoozed until:2099-01-15 -->"
+        )
+    )
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    assert get_block(conn, "dendr-sn")["snooze_until"] == "2099-01-15"
+
+
+def test_snooze_reconcile_is_idempotent():
+    config = _temp_vault(
+        digest_text=(
+            "- [ ] **Later** <!-- closure:dendr-sn status:snoozed until:2099-01-15 -->"
+        )
+    )
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+
+    assert reconcile_closures(config, conn) == 1
+    assert reconcile_closures(config, conn) == 0  # same date, nothing to do
+
+
+def test_due_snoozed_task_wakes_and_reappears():
+    from dendr.pipeline import wake_snoozed_tasks
+
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+    set_snooze(conn, "dendr-sn", "2000-01-01")
+    assert "dendr-sn" not in [r["block_id"] for r in get_open_tasks(conn)]
+
+    assert wake_snoozed_tasks(conn) == 1
+    row = get_block(conn, "dendr-sn")
+    assert row["completion_status"] is None
+    assert row["snooze_until"] is None
+    assert "dendr-sn" in [r["block_id"] for r in get_open_tasks(conn)]
+
+    ev = conn.execute(
+        "SELECT event_type, reason FROM task_events WHERE block_id = ? ORDER BY id DESC",
+        ("dendr-sn",),
+    ).fetchone()
+    assert ev["event_type"] == "created"
+    assert ev["reason"] == "woke"
+
+
+def test_future_snooze_does_not_wake():
+    from dendr.pipeline import wake_snoozed_tasks
+
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+    set_snooze(conn, "dendr-sn", "2099-01-01")
+    assert wake_snoozed_tasks(conn) == 0
+    assert get_block(conn, "dendr-sn")["completion_status"] == "snoozed"
+
+
+def test_expired_snooze_marker_does_not_refire_after_wake():
+    """A stale `snoozed until:<past>` marker left in the digest must not
+    re-snooze a task the wake step already resurfaced (no flip-flop)."""
+    from dendr.pipeline import wake_snoozed_tasks
+
+    config = _temp_vault(
+        digest_text=(
+            "- [ ] **Later** <!-- closure:dendr-sn status:snoozed until:2000-01-01 -->"
+        )
+    )
+    conn = _temp_db()
+    upsert_block(conn, _make_task_block("dendr-sn"), "2026-04-01")
+    set_snooze(conn, "dendr-sn", "2000-01-01")
+
+    assert wake_snoozed_tasks(conn) == 1
+    assert reconcile_closures(config, conn) == 0
+    assert get_block(conn, "dendr-sn")["completion_status"] is None
 
 
 def test_transition_suppressed_when_user_already_closed():

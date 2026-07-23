@@ -6,7 +6,7 @@ import logging
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +40,8 @@ from dendr.models import (
     REASON_DONE,
     REASON_REOPENED,
     REASON_SNOOZED,
+    REASON_WOKE,
+    SNOOZE_DEFAULT_DAYS,
     SOURCE_USER,
     Block,
     QueueItem,
@@ -193,11 +195,15 @@ def _track_checkbox_transition(
     if old_state == item.checkbox_state:
         return
 
-    if item.checkbox_state == CHECKBOX_CLOSED and old_state == CHECKBOX_OPEN:
+    if item.checkbox_state == CHECKBOX_CLOSED:
         # A digest closure already logged a user-sourced close and ticked the
         # source checkbox; don't double-count that echo as an auto close.
         if existing["completion_status"] in COMPLETION_TERMINAL:
             return
+        # A plain block turned straight into a done task (none→closed) is both a
+        # creation and a close; open→closed is just the close.
+        if old_state == CHECKBOX_NONE:
+            db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
         db.insert_task_event(
             conn, item.block_id, EVENT_CLOSED, source_date, reason=REASON_DONE
         )
@@ -217,7 +223,9 @@ def _track_checkbox_transition(
                 source_date,
                 reason=REASON_REOPENED,
             )
-        elif old_state == CHECKBOX_CLOSED:
+        else:
+            # A newly-added open checkbox (none→open) or an un-done task
+            # (closed→open) is a fresh task appearance either way.
             db.insert_task_event(conn, item.block_id, EVENT_CREATED, source_date)
 
 
@@ -320,10 +328,11 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
 
 
 # Maps a digest closure status to (new completion_status, task_event reason).
+# `snoozed` is handled separately (_apply_snooze) because it also carries a wake
+# date and must not write completion_status the same blunt way.
 _CLOSURE_DETAILS = {
     CLOSURE_DONE: (COMPLETION_DONE, REASON_DONE),
     CLOSURE_ABANDONED: (COMPLETION_ABANDONED, REASON_ABANDONED),
-    CLOSURE_SNOOZED: (COMPLETION_SNOOZED, REASON_SNOOZED),
     CLOSURE_STILL_LIVE: (COMPLETION_OPEN, REASON_REOPENED),
 }
 
@@ -339,6 +348,57 @@ _SOURCE_WRITEBACK_MARK = {
     CLOSURE_DONE: "x",
     CLOSURE_ABANDONED: "-",
 }
+
+
+def _default_snooze_until() -> str:
+    """Wake date for a snooze with no explicit `until:` — a week out."""
+    return (datetime.now() + timedelta(days=SNOOZE_DEFAULT_DAYS)).strftime("%Y-%m-%d")
+
+
+def _apply_snooze(
+    conn: sqlite3.Connection, closure, row: sqlite3.Row, today: str
+) -> bool:
+    """Snooze a task until its wake date. Returns True if anything changed.
+
+    The wake date is the marker's `until:` value or a week out by default. A
+    past/expired date is ignored here — wake_snoozed_tasks handles it, and
+    re-snoozing to a past date would just fight the wake and flip-flop.
+    """
+    wake_until = closure.wake_date or _default_snooze_until()
+    if wake_until <= today:
+        return False
+    if (
+        row["completion_status"] == COMPLETION_SNOOZED
+        and row["snooze_until"] == wake_until
+    ):
+        return False  # already snoozed to the same date
+    db.set_snooze(conn, closure.block_id, wake_until)
+    db.insert_task_event(
+        conn,
+        closure.block_id,
+        EVENT_CLOSED,
+        today,
+        reason=REASON_SNOOZED,
+        source=SOURCE_USER,
+    )
+    TASKS_CLOSED.labels(source="user").inc()
+    return True
+
+
+def wake_snoozed_tasks(conn: sqlite3.Connection) -> int:
+    """Resurface snoozed tasks whose wake date has arrived.
+
+    Clears completion_status (so get_open_tasks and the digest Task Review see
+    them again) and logs a `woke` event. Returns the number woken.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    due = db.get_due_snoozed_blocks(conn, today)
+    for block_id in due:
+        db.update_completion_status(conn, block_id, None)
+        db.insert_task_event(conn, block_id, EVENT_CREATED, today, reason=REASON_WOKE)
+    if due:
+        logger.info("Woke %d snoozed task(s)", len(due))
+    return len(due)
 
 
 def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
@@ -375,6 +435,11 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     for closure in closures:
         row = existing.get(closure.block_id)
         if row is None:
+            continue
+
+        if closure.status == CLOSURE_SNOOZED:
+            if _apply_snooze(conn, closure, row, today):
+                applied += 1
             continue
 
         details = _CLOSURE_DETAILS.get(closure.status)
@@ -427,6 +492,9 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
     logger.info("Starting ingest cycle...")
     t0 = time.monotonic()
 
+    # Elapsed snooze timers first, then apply the user's newest digest edits.
+    woke = wake_snoozed_tasks(conn)
+
     closures_applied = reconcile_closures(config, conn)
     if closures_applied:
         logger.info("Reconciled %d closures from digest", closures_applied)
@@ -449,6 +517,7 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
     INGEST_CYCLE_SECONDS.observe(elapsed)
 
     return {
+        "woke_snoozed": woke,
         "closures_applied": closures_applied,
         "dirty_blocks": len(dirty),
         "queued": queued,

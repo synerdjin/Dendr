@@ -44,6 +44,10 @@ REASON_DONE = "done"
 REASON_ABANDONED = "abandoned"
 REASON_SNOOZED = "snoozed"
 REASON_REOPENED = "reopened"
+REASON_WOKE = "woke"  # a snoozed task's wake date passed; it's active again
+
+# Default snooze duration when a `snoozed` closure carries no `until:` date.
+SNOOZE_DEFAULT_DAYS = 7
 
 # `task_events.source` — who drove the transition.
 SOURCE_AUTO = "auto"  # checkbox edit in a daily note

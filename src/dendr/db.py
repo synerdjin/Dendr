@@ -20,6 +20,7 @@ import numpy as np
 from dendr.models import (
     CHECKBOX_OPEN,
     COMPLETION_OPEN,
+    COMPLETION_SNOOZED,
     REASON_REOPENED,
     SOURCE_AUTO,
     Block,
@@ -68,6 +69,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             block_hash        TEXT NOT NULL,
             checkbox_state    TEXT NOT NULL DEFAULT 'none',
             completion_status TEXT,
+            snooze_until      TEXT,
             attachment_path   TEXT,
             attachment_type   TEXT,
             created_at        TEXT NOT NULL,
@@ -213,6 +215,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE blocks DROP COLUMN private")
     except sqlite3.OperationalError as e:
         logger.debug("private column drop skipped: %s", e)
+
+    # Add the snooze_until column (v9) to a pre-existing DB. Holds the wake date
+    # for a snoozed task; NULL for everything else.
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
+        if "snooze_until" not in cols:
+            conn.execute("ALTER TABLE blocks ADD COLUMN snooze_until TEXT")
+    except sqlite3.OperationalError as e:
+        logger.debug("snooze_until column add skipped: %s", e)
 
 
 # ── Block operations ──────────────────────────────────────────────────
@@ -438,16 +449,47 @@ def get_latest_reopen_event_time(conn: sqlite3.Connection, block_id: str) -> str
 def update_completion_status(
     conn: sqlite3.Connection, block_id: str, status: str | None
 ) -> bool:
-    """Set completion_status on an existing block. Returns True if a row updated."""
+    """Set completion_status on an existing block. Returns True if a row updated.
+
+    Also clears `snooze_until`, which is only meaningful while snoozed — any
+    other status (done/abandoned/open/NULL) leaves no pending wake date.
+    """
     cur = conn.execute(
         """
         UPDATE blocks
-           SET completion_status = ?, updated_at = ?
+           SET completion_status = ?, snooze_until = NULL, updated_at = ?
          WHERE block_id = ?
         """,
         (status, datetime.now().isoformat(), block_id),
     )
     return cur.rowcount > 0
+
+
+def set_snooze(conn: sqlite3.Connection, block_id: str, wake_until: str) -> bool:
+    """Snooze a task until `wake_until` (YYYY-MM-DD). Returns True if updated."""
+    cur = conn.execute(
+        """
+        UPDATE blocks
+           SET completion_status = ?, snooze_until = ?, updated_at = ?
+         WHERE block_id = ?
+        """,
+        (COMPLETION_SNOOZED, wake_until, datetime.now().isoformat(), block_id),
+    )
+    return cur.rowcount > 0
+
+
+def get_due_snoozed_blocks(conn: sqlite3.Connection, today: str) -> list[str]:
+    """block_ids of snoozed tasks whose wake date has arrived (<= today)."""
+    rows = conn.execute(
+        """
+        SELECT block_id FROM blocks
+         WHERE completion_status = ?
+           AND snooze_until IS NOT NULL
+           AND snooze_until <= ?
+        """,
+        (COMPLETION_SNOOZED, today),
+    ).fetchall()
+    return [r["block_id"] for r in rows]
 
 
 # ── Search ────────────────────────────────────────────────────────────

@@ -128,6 +128,27 @@ def test_build_synthesis_prompt_contains_raw_text():
     assert "Safety" in prompt
 
 
+def test_synthesis_prompt_instructs_closure_marker_roundtrip():
+    """Regression (F15): the synthesis prompt must tell Claude to emit the Task
+    Review closure markers, or a Claude-written digest.md silently loses the
+    round-trip that lets the user close tasks."""
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "period_end": datetime.now().strftime("%Y-%m-%d"),
+        "stats": {"blocks": 1, "open_tasks": 1},
+        "user_context": "",
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "Task Review" in prompt
+    assert "closure:" in prompt
+    assert "status:open" in prompt
+    assert "block_id" in prompt
+
+
 # ── Feedback parsing ──────────────────────────────────────────────────
 
 
