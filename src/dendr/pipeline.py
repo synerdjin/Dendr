@@ -34,8 +34,10 @@ from dendr.models import (
     COMPLETION_OPEN,
     COMPLETION_SNOOZED,
     COMPLETION_TERMINAL,
+    DELETE_GRACE_DAYS,
     EVENT_CLOSED,
     EVENT_CREATED,
+    EVENT_DELETED,
     REASON_ABANDONED,
     REASON_DONE,
     REASON_REOPENED,
@@ -487,6 +489,79 @@ def reconcile_closures(config: Config, conn: sqlite3.Connection) -> int:
     return applied
 
 
+def _source_is_evicted(source_file: str) -> bool:
+    """True if `source_file` is an iCloud dataless placeholder (evicted, not
+    deleted): the real file is replaced by a hidden `.<name>.icloud` stub."""
+    p = Path(source_file)
+    return (p.parent / f".{p.name}.icloud").exists()
+
+
+def _days_since(date_str: str, today: str) -> int:
+    """Whole days from date_str to today (both YYYY-MM-DD); 0 if unparseable."""
+    try:
+        d0 = datetime.strptime(date_str, "%Y-%m-%d").date()
+        d1 = datetime.strptime(today, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return 0
+    return max(0, (d1 - d0).days)
+
+
+def sweep_deletions(config: Config, conn: sqlite3.Connection) -> int:
+    """Tombstone-and-purge blocks whose source vanished from the vault.
+
+    A block absent from every Daily note is stamped `missing_since`; once it has
+    been continuously absent for DELETE_GRACE_DAYS it is purged (row, FTS, and
+    vector) and a `deleted` event is logged for the audit trail. The grace
+    window plus the guards below absorb sync hiccups so a transient absence
+    never destroys data:
+      - an empty or absent Daily/ (unmounted or not-yet-synced vault) is a
+        no-op — we refuse to purge against a blank directory;
+      - a block whose source file is an iCloud placeholder (evicted, not
+        deleted) is treated as present, since we cannot read it to verify.
+    A block that reappears has its missing stamp cleared, resetting the clock.
+    """
+    daily = config.daily_dir
+    md_files = sorted(daily.glob("*.md")) if daily.exists() else []
+    if not md_files:
+        return 0
+
+    seen: set[str] = set()
+    for note_path in md_files:
+        try:
+            for block in parse_daily_note(note_path, config.attachments_dir):
+                seen.add(block.block_id)
+        except OSError as e:
+            logger.warning("Could not read %s during delete sweep: %s", note_path, e)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    purged = 0
+    for row in db.iter_block_presence(conn):
+        block_id = row["block_id"]
+        if block_id in seen:
+            if row["missing_since"] is not None:
+                db.clear_block_missing(conn, block_id)
+            continue
+        if _source_is_evicted(row["source_file"]):
+            continue
+
+        missing_since = row["missing_since"]
+        if missing_since is None:
+            db.mark_block_missing(conn, block_id, today)
+        elif _days_since(missing_since, today) >= DELETE_GRACE_DAYS:
+            db.purge_block(conn, block_id)
+            db.insert_task_event(conn, block_id, EVENT_DELETED, today)
+            purged += 1
+
+    if purged:
+        logger.info(
+            "Purged %d block(s) absent from the vault > %d days",
+            purged,
+            DELETE_GRACE_DAYS,
+        )
+        config.append_activity_log(f"PURGE removed {purged} deleted block(s)")
+    return purged
+
+
 def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict:
     """Full ingest cycle: reconcile closures -> scan -> queue -> process."""
     logger.info("Starting ingest cycle...")
@@ -505,6 +580,8 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
 
     processed = process_queue(config, conn, llm)
 
+    purged = sweep_deletions(config, conn)
+
     elapsed = time.monotonic() - t0
     rate = processed / elapsed if elapsed > 0 else 0
     logger.info(
@@ -522,6 +599,7 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
         "dirty_blocks": len(dirty),
         "queued": queued,
         "processed": processed,
+        "purged": purged,
         "elapsed_sec": round(elapsed, 1),
         "blocks_per_sec": round(rate, 1),
     }
