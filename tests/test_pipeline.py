@@ -610,6 +610,109 @@ def test_dead_lettered_block_not_reenqueued_until_edited():
     assert not (config.dead_dir / "dendr-poison.json").exists()
 
 
+# ── Deletion sweep / grace-period tombstone (F6) ──────────────────────
+
+
+def _sweep_setup():
+    """A vault + DB with two ref'd blocks in Daily/2026-04-01.md."""
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text(
+        "- [ ] keep ^dendr-keep\n- [ ] gone ^dendr-gone\n", encoding="utf-8"
+    )
+    for bid, text in (("dendr-keep", "keep"), ("dendr-gone", "gone")):
+        upsert_block(conn, Block(bid, str(note), 0, 0, text, f"h-{bid}"), "2026-04-01")
+    return config, conn, note
+
+
+def _backdate_missing(conn, block_id, days):
+    from datetime import datetime, timedelta
+
+    old = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn.execute(
+        "UPDATE blocks SET missing_since = ? WHERE block_id = ?", (old, block_id)
+    )
+
+
+def test_sweep_stamps_then_purges_after_grace():
+    from dendr.db import search_blocks_fts
+    from dendr.pipeline import sweep_deletions
+
+    config, conn, note = _sweep_setup()
+    note.write_text("- [ ] keep ^dendr-keep\n", encoding="utf-8")  # "gone" deleted
+
+    # First sweep: stamp missing_since, do NOT purge (grace window intact).
+    assert sweep_deletions(config, conn) == 0
+    assert get_block(conn, "dendr-gone")["missing_since"] is not None
+    assert get_block(conn, "dendr-keep")["missing_since"] is None
+
+    # Beyond the grace window → purged (row, FTS, audit event).
+    _backdate_missing(conn, "dendr-gone", 8)
+    assert sweep_deletions(config, conn) == 1
+    assert get_block(conn, "dendr-gone") is None
+    assert get_block(conn, "dendr-keep") is not None
+    assert search_blocks_fts(conn, "gone") == []
+    ev = conn.execute(
+        "SELECT event_type FROM task_events WHERE block_id = 'dendr-gone'"
+    ).fetchone()
+    assert ev["event_type"] == "deleted"
+
+
+def test_sweep_reappearance_clears_missing():
+    from dendr.pipeline import sweep_deletions
+
+    config, conn, note = _sweep_setup()
+    note.write_text("- [ ] keep ^dendr-keep\n", encoding="utf-8")
+    sweep_deletions(config, conn)
+    assert get_block(conn, "dendr-gone")["missing_since"] is not None
+
+    # It comes back before the grace window elapses — the stamp must clear.
+    note.write_text(
+        "- [ ] keep ^dendr-keep\n- [ ] gone ^dendr-gone\n", encoding="utf-8"
+    )
+    assert sweep_deletions(config, conn) == 0
+    assert get_block(conn, "dendr-gone")["missing_since"] is None
+
+
+def test_sweep_empty_daily_never_purges():
+    from dendr.pipeline import sweep_deletions
+
+    config, conn, note = _sweep_setup()
+    note.unlink()  # unmounted / not-yet-synced vault: no .md files at all
+    _backdate_missing(conn, "dendr-gone", 30)
+    _backdate_missing(conn, "dendr-keep", 30)
+
+    assert sweep_deletions(config, conn) == 0
+    assert get_block(conn, "dendr-gone") is not None
+    assert get_block(conn, "dendr-keep") is not None
+
+
+def test_sweep_evicted_file_is_not_purged():
+    from dendr.pipeline import sweep_deletions
+
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+    # A present note keeps Daily/ non-empty so the guard passes.
+    present = config.daily_dir / "2026-04-02.md"
+    present.write_text("- [ ] here ^dendr-here\n", encoding="utf-8")
+    upsert_block(
+        conn, Block("dendr-here", str(present), 0, 0, "here", "h1"), "2026-04-02"
+    )
+    # An evicted note: no readable .md, only the iCloud placeholder stub.
+    evicted = config.daily_dir / "2026-04-01.md"
+    (config.daily_dir / ".2026-04-01.md.icloud").write_text("", encoding="utf-8")
+    upsert_block(
+        conn, Block("dendr-evicted", str(evicted), 0, 0, "evicted", "h2"), "2026-04-01"
+    )
+    _backdate_missing(conn, "dendr-evicted", 30)
+
+    assert sweep_deletions(config, conn) == 0
+    assert get_block(conn, "dendr-evicted") is not None  # evicted != deleted
+
+
 # ── iCloud conflicted-copy filtering (F2) ─────────────────────────────
 
 

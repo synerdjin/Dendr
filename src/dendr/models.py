@@ -37,6 +37,11 @@ CLOSURE_STATUSES = frozenset(
 # `task_events.event_type` values.
 EVENT_CREATED = "created"
 EVENT_CLOSED = "closed"
+EVENT_DELETED = "deleted"  # block/file removed from the vault (audit record)
+
+# A block absent from the vault for this many consecutive days is purged. The
+# grace window absorbs transient sync hiccups (iCloud eviction, partial syncs).
+DELETE_GRACE_DAYS = 7
 
 # `task_events.reason` values (only meaningful for EVENT_CLOSED and for the
 # "reopened" reason on an EVENT_CREATED row following a user reopen).

@@ -70,6 +70,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             checkbox_state    TEXT NOT NULL DEFAULT 'none',
             completion_status TEXT,
             snooze_until      TEXT,
+            missing_since     TEXT,
             attachment_path   TEXT,
             attachment_type   TEXT,
             created_at        TEXT NOT NULL,
@@ -225,6 +226,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError as e:
         logger.debug("snooze_until column add skipped: %s", e)
 
+    # Add the missing_since column (v10): the date a block was first noticed
+    # absent from the vault, driving grace-period tombstone deletion.
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
+        if "missing_since" not in cols:
+            conn.execute("ALTER TABLE blocks ADD COLUMN missing_since TEXT")
+    except sqlite3.OperationalError as e:
+        logger.debug("missing_since column add skipped: %s", e)
+
 
 # ── Block operations ──────────────────────────────────────────────────
 
@@ -346,6 +356,36 @@ def upsert_block_embedding(
         "INSERT INTO blocks_vec(embedding, block_id) VALUES (?, ?)",
         (embedding.astype(np.float32).tobytes(), block_id),
     )
+
+
+# ── Deletion sweep (grace-period tombstone) ───────────────────────────
+
+
+def iter_block_presence(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every block's (block_id, source_file, missing_since) for the delete sweep."""
+    return conn.execute(
+        "SELECT block_id, source_file, missing_since FROM blocks"
+    ).fetchall()
+
+
+def mark_block_missing(conn: sqlite3.Connection, block_id: str, today: str) -> None:
+    """Stamp the date a block was first noticed absent from the vault."""
+    conn.execute(
+        "UPDATE blocks SET missing_since = ? WHERE block_id = ?", (today, block_id)
+    )
+
+
+def clear_block_missing(conn: sqlite3.Connection, block_id: str) -> None:
+    """A block reappeared — drop its missing stamp so the grace clock resets."""
+    conn.execute(
+        "UPDATE blocks SET missing_since = NULL WHERE block_id = ?", (block_id,)
+    )
+
+
+def purge_block(conn: sqlite3.Connection, block_id: str) -> None:
+    """Permanently remove a block: row (FTS follows via trigger) + its vector."""
+    conn.execute("DELETE FROM blocks_vec WHERE block_id = ?", (block_id,))
+    conn.execute("DELETE FROM blocks WHERE block_id = ?", (block_id,))
 
 
 # ── Feedback operations ───────────────────────────────────────────────
