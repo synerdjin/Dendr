@@ -31,6 +31,6 @@ def test_lock_released_after_use(tmp_path):
 
 def test_lock_creates_data_dir_and_file(tmp_path):
     config = _config(tmp_path)
-    with ingest_lock(config) as lock_path:
-        assert lock_path.exists()
-        assert lock_path == config.data_dir / "ingest.lock"
+    assert not config.data_dir.exists()
+    with ingest_lock(config):
+        assert config.lock_path.exists()

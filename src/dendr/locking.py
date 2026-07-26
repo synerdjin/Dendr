@@ -15,13 +15,10 @@ import contextlib
 import fcntl
 import logging
 from collections.abc import Iterator
-from pathlib import Path
 
 from dendr.config import Config
 
 logger = logging.getLogger(__name__)
-
-LOCK_FILENAME = "ingest.lock"
 
 
 class LockHeld(RuntimeError):
@@ -29,25 +26,28 @@ class LockHeld(RuntimeError):
 
 
 @contextlib.contextmanager
-def ingest_lock(config: Config) -> Iterator[Path]:
+def ingest_lock(config: Config) -> Iterator[None]:
     """Hold the exclusive ingest lock for the duration, or raise LockHeld.
 
-    Yields the lock file path. The lock is advisory (only cooperating callers —
-    `ingest` and `reprocess` — take it), non-blocking, and auto-released on
-    process exit.
+    The lock is advisory (only cooperating callers — `ingest` and `reprocess` —
+    take it), non-blocking, and released when the file object closes, including
+    on process exit.
     """
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = config.data_dir / LOCK_FILENAME
+    lock_path = config.lock_path
     fd = lock_path.open("w")
     try:
         fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
         fd.close()
+        # Logged (not just echoed) so a wedged run that skips every scheduled
+        # tick is visible to DENDR_LOG_JSON aggregation, not only on stderr.
+        logger.warning("Ingest lock %s is held by another process", lock_path)
         raise LockHeld(
             f"another ingest or reprocess is already running (lock: {lock_path})"
         ) from e
     try:
-        yield lock_path
+        yield
     finally:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        # Closing the fd releases the flock — no explicit LOCK_UN needed.
         fd.close()

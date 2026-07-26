@@ -108,6 +108,8 @@ def init(vault_path: str) -> None:
 )
 def ingest(data_dir: str | None, vault: str | None) -> None:
     """Run a single ingest cycle."""
+    import contextlib
+
     from dendr.config import Config
     from dendr.db import connect, init_schema
     from dendr.llm import LLMClient
@@ -119,19 +121,23 @@ def ingest(data_dir: str | None, vault: str | None) -> None:
     if vault:
         config.vault_path = Path(vault).resolve()
 
-    # The scheduled agent fires every 15 min; if a reprocess (or a prior cycle)
-    # is still running, skip this tick rather than racing it — the next tick
-    # will pick up the work.
+    # Skip this tick rather than racing a run already in flight; the scheduled
+    # agent fires again in 15 minutes. The try covers only acquisition, so a
+    # LockHeld from anywhere else can't be misreported as a lock conflict.
+    lock = contextlib.ExitStack()
     try:
-        with ingest_lock(config):
-            conn = connect(config.db_path)
-            init_schema(conn)
-            llm = LLMClient(config)
-            stats = run_ingest(config, conn, llm)
-            conn.close()
-            click.echo(json.dumps(stats, indent=2))
+        lock.enter_context(ingest_lock(config))
     except LockHeld as e:
         click.echo(f"Skipping ingest: {e}", err=True)
+        return
+
+    with lock:
+        conn = connect(config.db_path)
+        init_schema(conn)
+        llm = LLMClient(config)
+        stats = run_ingest(config, conn, llm)
+        conn.close()
+        click.echo(json.dumps(stats, indent=2))
 
 
 @main.command()
@@ -155,6 +161,7 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     and clears the done/processing queue directories. User-set
     `completion_status` values are preserved.
     """
+    import contextlib
     import shutil
 
     from dendr.config import Config
@@ -168,49 +175,50 @@ def reprocess(data_dir: str | None, vault: str | None, run: bool) -> None:
     if vault:
         config.vault_path = Path(vault).resolve()
 
-    # Take the ingest lock so we never clear the processing/ queue out from
-    # under a scheduled ingest that has items mid-flight there.
+    # Abort rather than clear the processing/ queue out from under a scheduled
+    # ingest that has items mid-flight there. The try covers only acquisition.
+    lock = contextlib.ExitStack()
     try:
-        with ingest_lock(config):
-            conn = connect(config.db_path)
-            init_schema(conn)
-
-            # Blank the hash so every block is treated as dirty on next ingest.
-            # completion_status is preserved so user closures survive re-ingest.
-            count = mark_all_blocks_dirty(conn)
-            click.echo(f"Marked {count} blocks as dirty")
-
-            # Clear done queue
-            done_count = 0
-            if config.done_dir.exists():
-                done_count = len(list(config.done_dir.glob("*.json")))
-                shutil.rmtree(config.done_dir)
-                config.done_dir.mkdir(parents=True, exist_ok=True)
-            click.echo(f"Cleared {done_count} done queue items")
-
-            # Clear processing queue (stale from prior runs)
-            if config.processing_dir.exists():
-                proc_count = len(list(config.processing_dir.glob("*.json")))
-                if proc_count:
-                    shutil.rmtree(config.processing_dir)
-                    config.processing_dir.mkdir(parents=True, exist_ok=True)
-                    click.echo(f"Cleared {proc_count} stale processing items")
-
-            click.echo(
-                "Block state reset. All blocks will be reprocessed on next ingest."
-            )
-
-            if run:
-                click.echo("Starting ingest...")
-                llm = LLMClient(config)
-                stats = run_ingest(config, conn, llm)
-                click.echo(json.dumps(stats, indent=2))
-
-            conn.close()
+        lock.enter_context(ingest_lock(config))
     except LockHeld as e:
         raise click.ClickException(
             f"{e}. Wait for it to finish (or stop the launchd agent), then retry."
         ) from e
+
+    with lock:
+        conn = connect(config.db_path)
+        init_schema(conn)
+
+        # Blank the hash so every block is treated as dirty on next ingest.
+        # completion_status is preserved so user closures survive re-ingest.
+        count = mark_all_blocks_dirty(conn)
+        click.echo(f"Marked {count} blocks as dirty")
+
+        # Clear done queue
+        done_count = 0
+        if config.done_dir.exists():
+            done_count = len(list(config.done_dir.glob("*.json")))
+            shutil.rmtree(config.done_dir)
+            config.done_dir.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Cleared {done_count} done queue items")
+
+        # Clear processing queue (stale from prior runs)
+        if config.processing_dir.exists():
+            proc_count = len(list(config.processing_dir.glob("*.json")))
+            if proc_count:
+                shutil.rmtree(config.processing_dir)
+                config.processing_dir.mkdir(parents=True, exist_ok=True)
+                click.echo(f"Cleared {proc_count} stale processing items")
+
+        click.echo("Block state reset. All blocks will be reprocessed on next ingest.")
+
+        if run:
+            click.echo("Starting ingest...")
+            llm = LLMClient(config)
+            stats = run_ingest(config, conn, llm)
+            click.echo(json.dumps(stats, indent=2))
+
+        conn.close()
 
 
 @main.command()

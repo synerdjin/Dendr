@@ -105,6 +105,11 @@ class Config:
     def config_file_path(self) -> Path:
         return self.data_dir / "config.json"
 
+    @property
+    def lock_path(self) -> Path:
+        """Advisory lock serializing `dendr ingest` against `dendr reprocess`."""
+        return self.data_dir / "ingest.lock"
+
     def append_activity_log(self, entry: str) -> None:
         """Append to Wiki/log.md."""
         log_path = self.wiki_dir / "log.md"
