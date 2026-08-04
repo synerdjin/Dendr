@@ -610,6 +610,81 @@ def test_dead_lettered_block_not_reenqueued_until_edited():
     assert not (config.dead_dir / "dendr-poison.json").exists()
 
 
+# ── Embedding backfill (F4) ───────────────────────────────────────────
+
+
+class _FailingLLM:
+    """Every embedding attempt fails, as a broken/missing model would."""
+
+    def embed(self, text, kind="document"):
+        raise RuntimeError("embed unavailable")
+
+    def embed_batch(self, texts, kind="document"):
+        raise RuntimeError("embed unavailable")
+
+
+def _vector_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) AS n FROM blocks_vec").fetchone()["n"]
+
+
+def test_failed_embedding_is_backfilled_on_a_later_cycle():
+    """Regression (F4): a block committed without a vector (embedding failed)
+    is invisible to semantic search forever, because its hash matches the file
+    so no re-scan ever retries. A later cycle must heal the hole."""
+    config = _temp_vault()
+    config.ensure_dirs()
+    conn = _temp_db()
+
+    note = config.daily_dir / "2026-04-01.md"
+    note.write_text("a thought worth finding later ^dendr-f4\n", encoding="utf-8")
+
+    # Cycle 1: embedding is broken. The block commits (text stays searchable)
+    # but no vector is written.
+    run_ingest(config, conn, _FailingLLM())
+    assert get_block(conn, "dendr-f4") is not None
+    assert _vector_count(conn) == 0
+
+    # Cycle 2: the model works again. Nothing is dirty — the file is unchanged —
+    # so only the backfill can heal this.
+    stats = run_ingest(config, conn, _StubLLM())
+    assert stats["dirty_blocks"] == 0
+    assert stats["backfilled"] == 1
+    assert _vector_count(conn) == 1
+
+    # Cycle 3: nothing left to heal.
+    assert run_ingest(config, conn, _StubLLM())["backfilled"] == 0
+
+
+def test_backfill_is_bounded_by_limit():
+    """A large backlog of holes costs a fixed amount per cycle."""
+    from dendr.pipeline import backfill_embeddings
+
+    conn = _temp_db()
+    for i in range(5):
+        upsert_block(
+            conn, Block(f"dendr-b{i}", "f.md", 0, 0, f"text {i}", f"h{i}"), "2026-04-01"
+        )
+    assert _vector_count(conn) == 0
+
+    assert backfill_embeddings(conn, _StubLLM(), limit=2) == 2
+    assert _vector_count(conn) == 2
+    assert backfill_embeddings(conn, _StubLLM(), limit=10) == 3
+    assert _vector_count(conn) == 5
+
+
+def test_backfill_tolerates_still_failing_embeddings():
+    """If the model is still broken, backfill heals nothing and doesn't raise."""
+    from dendr.pipeline import backfill_embeddings
+
+    conn = _temp_db()
+    upsert_block(conn, Block("dendr-x", "f.md", 0, 0, "text", "h1"), "2026-04-01")
+
+    assert backfill_embeddings(conn, _FailingLLM()) == 0
+    assert _vector_count(conn) == 0
+    # The block is untouched and still eligible next cycle.
+    assert get_block(conn, "dendr-x") is not None
+
+
 # ── Deletion sweep / grace-period tombstone (F6) ──────────────────────
 
 

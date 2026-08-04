@@ -59,6 +59,10 @@ logger = logging.getLogger(__name__)
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
+# Max blocks re-embedded per cycle by backfill_embeddings, so a large
+# backlog of holes can't stall an ingest run.
+EMBED_BACKFILL_LIMIT = 100
+
 # A sync-conflict copy ("<note> 2.md", "<note> (1).md", ".sync-conflict-…") is a
 # byte copy of a real note and carries the SAME `^dendr-<ulid>` refs, so
 # ingesting it alongside the original makes each block's stored text flip-flop
@@ -232,23 +236,27 @@ def _track_checkbox_transition(
 
 
 def _embed_all(
-    llm: LLMClient, claimed: list[QueueItem]
+    llm: LLMClient, blocks: list[tuple[str, str]]
 ) -> dict[str, np.ndarray | None]:
-    """Embed every block. Falls back to per-item on batch failure."""
-    logger.info("Embedding %d blocks", len(claimed))
+    """Embed every (block_id, text) pair. Falls back to per-item on batch failure.
+
+    A value of None means that block could not be embedded; the caller decides
+    what to do about the hole (see backfill_embeddings).
+    """
+    logger.info("Embedding %d blocks", len(blocks))
     try:
-        vecs = llm.embed_batch([i.block_text for i in claimed])
-        return {item.block_id: vec for item, vec in zip(claimed, vecs)}
+        vecs = llm.embed_batch([text for _, text in blocks])
+        return {block_id: vec for (block_id, _), vec in zip(blocks, vecs)}
     except Exception as e:
         logger.warning("Batch embed failed, falling back per-item: %s", e)
 
     out: dict[str, np.ndarray | None] = {}
-    for item in claimed:
+    for block_id, text in blocks:
         try:
-            out[item.block_id] = llm.embed(item.block_text)
+            out[block_id] = llm.embed(text)
         except Exception as e:
-            logger.warning("Failed to embed %s: %s", item.block_id, e)
-            out[item.block_id] = None
+            logger.warning("Failed to embed %s: %s", block_id, e)
+            out[block_id] = None
     return out
 
 
@@ -267,7 +275,7 @@ def process_queue(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> i
         return 0
 
     embed_t0 = time.monotonic()
-    embeddings = _embed_all(llm, claimed)
+    embeddings = _embed_all(llm, [(i.block_id, i.block_text) for i in claimed])
     embed_elapsed = time.monotonic() - embed_t0
     rate = len(claimed) / embed_elapsed if embed_elapsed > 0 else 0
     EMBED_THROUGHPUT.set(rate)
@@ -562,6 +570,38 @@ def sweep_deletions(config: Config, conn: sqlite3.Connection) -> int:
     return purged
 
 
+def backfill_embeddings(
+    conn: sqlite3.Connection, llm: LLMClient, limit: int = EMBED_BACKFILL_LIMIT
+) -> int:
+    """Re-embed blocks whose vector is missing. Returns the number healed.
+
+    When an embedding fails, the block is still committed with its real hash so
+    its text is immediately searchable via FTS — but that means the next scan
+    sees an unchanged file and never retries, leaving a permanent hole in
+    semantic search. This heals those holes on a later cycle, once whatever
+    broke (model not yet downloaded, a transient OOM) has recovered.
+
+    Bounded by `limit` so a large backlog — or a block that fails every time —
+    costs a fixed amount per cycle instead of stalling the run.
+    """
+    rows = db.get_blocks_missing_embeddings(conn, limit)
+    if not rows:  # None (no vector support) or empty (nothing to heal)
+        return 0
+
+    logger.info("Backfilling embeddings for %d block(s)", len(rows))
+    embeddings = _embed_all(llm, [(r["block_id"], r["text"]) for r in rows])
+    healed = 0
+    for block_id, vec in embeddings.items():
+        if vec is None:
+            continue
+        db.upsert_block_embedding(conn, block_id, vec)
+        healed += 1
+
+    if healed:
+        logger.info("Backfilled %d missing embedding(s)", healed)
+    return healed
+
+
 def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict:
     """Full ingest cycle: reconcile closures -> scan -> queue -> process."""
     logger.info("Starting ingest cycle...")
@@ -582,6 +622,10 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
 
     purged = sweep_deletions(config, conn)
 
+    # Heal any semantic-search holes left by earlier embedding failures. Runs
+    # after the sweep so blocks about to be purged aren't embedded first.
+    backfilled = backfill_embeddings(conn, llm)
+
     elapsed = time.monotonic() - t0
     rate = processed / elapsed if elapsed > 0 else 0
     logger.info(
@@ -600,6 +644,7 @@ def run_ingest(config: Config, conn: sqlite3.Connection, llm: LLMClient) -> dict
         "queued": queued,
         "processed": processed,
         "purged": purged,
+        "backfilled": backfilled,
         "elapsed_sec": round(elapsed, 1),
         "blocks_per_sec": round(rate, 1),
     }
