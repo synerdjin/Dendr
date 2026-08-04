@@ -56,6 +56,22 @@ def connect(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connect
     return conn
 
 
+def _add_blocks_column(conn: sqlite3.Connection, column: str, alter_sql: str) -> None:
+    """Add a column to `blocks` if a pre-existing DB doesn't have it yet.
+
+    Every schema bump that widens `blocks` needs one of these. `alter_sql` is
+    passed in as a literal so no SQL is ever built by interpolation. Concurrent
+    callers may race the ALTER — the loser's OperationalError is swallowed at
+    debug level, same as the blocks_vec migration.
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
+        if column not in cols:
+            conn.execute(alter_sql)
+    except sqlite3.OperationalError as e:
+        logger.debug("%s column add skipped: %s", column, e)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """Create all tables if they don't exist."""
     conn.executescript(
@@ -217,23 +233,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError as e:
         logger.debug("private column drop skipped: %s", e)
 
-    # Add the snooze_until column (v9) to a pre-existing DB. Holds the wake date
-    # for a snoozed task; NULL for everything else.
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
-        if "snooze_until" not in cols:
-            conn.execute("ALTER TABLE blocks ADD COLUMN snooze_until TEXT")
-    except sqlite3.OperationalError as e:
-        logger.debug("snooze_until column add skipped: %s", e)
+    # snooze_until (v9): the wake date for a snoozed task; NULL otherwise.
+    _add_blocks_column(
+        conn, "snooze_until", "ALTER TABLE blocks ADD COLUMN snooze_until TEXT"
+    )
 
-    # Add the missing_since column (v10): the date a block was first noticed
-    # absent from the vault, driving grace-period tombstone deletion.
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(blocks)")}
-        if "missing_since" not in cols:
-            conn.execute("ALTER TABLE blocks ADD COLUMN missing_since TEXT")
-    except sqlite3.OperationalError as e:
-        logger.debug("missing_since column add skipped: %s", e)
+    # missing_since (v10): the date a block was first noticed absent from the
+    # vault, driving grace-period tombstone deletion.
+    _add_blocks_column(
+        conn, "missing_since", "ALTER TABLE blocks ADD COLUMN missing_since TEXT"
+    )
 
 
 # ── Block operations ──────────────────────────────────────────────────
