@@ -358,6 +358,35 @@ def upsert_block_embedding(
     )
 
 
+def get_blocks_missing_embeddings(
+    conn: sqlite3.Connection, limit: int = 100
+) -> list[sqlite3.Row] | None:
+    """Blocks committed without a vector, newest first (bounded by `limit`).
+
+    An embedding failure still commits the block — its text stays searchable via
+    FTS — but leaves a hole in semantic search that no re-scan would ever notice,
+    since the block's hash matches the file. These are the holes to backfill.
+
+    Returns None (not an empty list) when `blocks_vec` is unavailable, so a
+    missing sqlite-vec extension isn't mistaken for "every block needs one".
+    """
+    try:
+        return conn.execute(
+            """
+            SELECT b.* FROM blocks b
+             WHERE NOT EXISTS (
+                   SELECT 1 FROM blocks_vec v WHERE v.block_id = b.block_id
+             )
+             ORDER BY b.source_date DESC
+             LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.debug("blocks_vec unavailable, skipping backfill scan: %s", e)
+        return None
+
+
 # ── Deletion sweep (grace-period tombstone) ───────────────────────────
 
 
