@@ -13,6 +13,7 @@ import numpy as np
 
 from dendr import db, queue
 from dendr.config import Config
+from dendr.fsutil import DATE_PATTERN, scan_order
 from dendr.llm import LLMClient
 from dendr.metrics import (
     BLOCKS_ERROR,
@@ -57,42 +58,18 @@ from dendr.parser import (
 
 logger = logging.getLogger(__name__)
 
-_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_DATE_RE = re.compile(rf"({DATE_PATTERN})")
 
 # Max blocks re-embedded per cycle by backfill_embeddings, so a large
 # backlog of holes can't stall an ingest run.
 EMBED_BACKFILL_LIMIT = 100
 
-# A sync-conflict copy ("<note> 2.md", "<note> (1).md", ".sync-conflict-…") is a
-# byte copy of a real note and carries the SAME `^dendr-<ulid>` refs, so
-# ingesting it alongside the original makes each block's stored text flip-flop
-# between the two files every cycle. We don't trust any single vendor's naming
-# to catch it — scan_daily_notes enforces the real invariant (a block_id comes
-# from only one file per scan). This pattern only *sorts* conflict-shaped names
-# last so the canonical note claims its refs first; a note whose refs are
-# actually unique is still ingested even if its name happens to match here.
-_CONFLICT_RE = re.compile(
-    r"(?:"
-    r"conflicted copy"  # Dropbox / generic sync services
-    r"|\s\(\d+\)$"  # Obsidian Sync: "2026-07-01 (1)"
-    rf"|{_DATE_RE.pattern}\s+\d+$"  # iCloud: "2026-07-01 2"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def _is_conflicted_copy(path: Path) -> bool:
-    """True if `path` looks like a sync-conflict duplicate of a daily note."""
-    return _CONFLICT_RE.search(path.stem) is not None
-
-
-def _scan_order(path: Path) -> tuple[bool, str]:
-    """Sort key: canonical notes before conflict-shaped names, then by name.
-
-    On a cold start (neither file recorded yet) this decides which of two files
-    sharing a block ref is treated as canonical — the non-conflict-shaped name.
-    """
-    return (_is_conflicted_copy(path), path.name)
+# scan_daily_notes sorts by fsutil.scan_order so a sync-conflict copy ("<note>
+# 2.md" etc. — a byte copy carrying the SAME `^dendr-<ulid>` refs) sorts after
+# the canonical note. That alone doesn't skip anything: the real invariant is
+# enforced below (a block_id is claimed by only one file per scan) so a note
+# whose refs are actually unique is still ingested even if its name happens to
+# look conflict-shaped.
 
 
 def _extract_source_date(source_file: str) -> str:
@@ -114,7 +91,7 @@ def scan_daily_notes(config: Config, conn: sqlite3.Connection) -> list[Block]:
         return dirty_blocks
 
     claimed: dict[str, str] = {}  # block_id -> file that first claimed it
-    for note_path in sorted(daily_dir.glob("*.md"), key=_scan_order):
+    for note_path in sorted(daily_dir.glob("*.md"), key=scan_order):
         blocks = parse_daily_note(note_path, config.attachments_dir)
 
         # If a ref here was already claimed by another file this scan, this is a

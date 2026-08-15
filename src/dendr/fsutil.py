@@ -15,8 +15,44 @@ queue items — don't route through here; they carry no irreplaceable content.)
 from __future__ import annotations
 
 import os
+import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
+
+# Shared with pipeline.py's source-date extraction, so both stay in sync.
+DATE_PATTERN = r"\d{4}-\d{2}-\d{2}"
+
+# A sync-conflict copy ("<note> 2.md", "<note> (1).md", ".sync-conflict-…") is a
+# byte copy of a real note. Shared by pipeline.py (Daily/, where the real
+# invariant — a block ref claimed by only one file per scan — does the actual
+# deduping, and this only sorts conflict-shaped names last so the canonical
+# note claims refs first) and garden.py (Pages/, which has no block-ref
+# mechanism to fall back on, so conflict-shaped names are skipped outright).
+_CONFLICT_RE = re.compile(
+    rf"(?:"
+    r"conflicted copy"  # Dropbox / generic sync services
+    r"|\s\(\d+\)$"  # Obsidian Sync: "2026-07-01 (1)"
+    rf"|{DATE_PATTERN}\s+\d+$"  # iCloud: "2026-07-01 2"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_conflicted_copy(path: Path) -> bool:
+    """True if `path` looks like a sync-conflict duplicate of another note."""
+    return _CONFLICT_RE.search(path.stem) is not None
+
+
+def scan_order(path: Path) -> tuple[bool, str]:
+    """Sort key: canonical notes before conflict-shaped names, then by name."""
+    return (is_conflicted_copy(path), path.name)
+
+
+def iso_week_label(dt: datetime) -> str:
+    """Return an ISO week label like '2026-W15' (zero-padded, sortable)."""
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year:04d}-W{iso_week:02d}"
 
 
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
