@@ -571,3 +571,119 @@ def test_gather_digest_data_skips_prior_digests_without_claude(tmp_path):
     data_with_claude = _gather_digest_data(config, conn, use_claude=True)
     assert len(data_with_claude["prior_digests"]) == 1
     assert data_with_claude["prior_digests"][0]["iso_week"] == "2026-W15"
+
+
+# ── Garden integration ─────────────────────────────────────────────────
+
+
+def test_gather_digest_data_includes_empty_garden_without_pages(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _gather_digest_data
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    conn = _temp_db()
+
+    data = _gather_digest_data(config, conn)
+    assert data["garden"] == {}
+
+
+def test_gather_digest_data_honors_precomputed_garden_pages(tmp_path):
+    """generate_digest scans Pages/ once and passes the list in, so a caller
+    supplying garden_pages must not trigger a second filesystem scan."""
+    from dendr.config import Config
+    from dendr.digest import _gather_digest_data
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    config.pages_dir.mkdir(parents=True, exist_ok=True)
+    (config.pages_dir / "note.md").write_text(
+        "---\nstage: evergreen\n---\nSome body.\n", encoding="utf-8"
+    )
+    conn = _temp_db()
+
+    # An empty list stands in for "already scanned, and there's nothing" —
+    # if this were ignored in favor of a fresh scan, the real note on disk
+    # would show up in the summary instead.
+    data = _gather_digest_data(config, conn, garden_pages=[])
+    assert data["garden"] == {}
+
+
+def test_gather_digest_data_includes_garden_summary_with_pages(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import _gather_digest_data
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.wiki_dir.mkdir(parents=True, exist_ok=True)
+    config.pages_dir.mkdir(parents=True, exist_ok=True)
+    (config.pages_dir / "note.md").write_text(
+        "---\nstage: evergreen\n---\nSome body.\n", encoding="utf-8"
+    )
+    conn = _temp_db()
+
+    data = _gather_digest_data(config, conn)
+    assert data["garden"]["total"] == 1
+    assert data["garden"]["counts"]["evergreen"] == 1
+
+
+def test_build_synthesis_prompt_includes_garden_section():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "user_context": "",
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "garden": {
+            "counts": {"seedling": 1, "budding": 0, "evergreen": 1},
+            "total": 2,
+            "stalest_evergreens": [{"title": "X", "slug": "x", "tended": "2026-01-01"}],
+            "tended_this_period": [],
+            "resurface": [{"title": "Y", "slug": "y"}],
+        },
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "Garden state" in prompt
+    assert "[[x]]" in prompt
+    assert "[[y]]" in prompt
+
+
+def test_build_synthesis_prompt_missing_garden():
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "user_context": "",
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "No `Pages/` notes found" in prompt
+
+
+def test_render_local_digest_includes_garden_block():
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "period_end": today,
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "garden": {
+            "counts": {"seedling": 1, "budding": 0, "evergreen": 0},
+            "total": 1,
+            "stalest_evergreens": [],
+            "tended_this_period": [],
+            "resurface": [{"title": "Y", "slug": "y"}],
+        },
+        "section_effectiveness": {},
+    }
+    result = render_local_digest(data)
+    assert "## Garden" in result
+    assert "[[y]]" in result
+    assert "feedback:garden" in result

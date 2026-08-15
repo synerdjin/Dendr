@@ -17,6 +17,7 @@ from pathlib import Path
 
 import ulid
 
+from dendr.frontmatter import FRONTMATTER_RE
 from dendr.fsutil import atomic_write_text
 from dendr.models import (
     CHECKBOX_CLOSED,
@@ -33,9 +34,6 @@ _BLOCK_REF_RE = re.compile(r"\s+\^([\w-]+)\s*$")
 
 # Markdown task checkbox at the start of a block body.
 _CHECKBOX_RE = re.compile(r"^\s*\[(?P<mark>[ xX])\]\s?")
-
-# YAML frontmatter pattern
-_FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
 
 # Top-level list item (not indented sub-items)
 _TOP_LEVEL_LIST_RE = re.compile(r"^- ")
@@ -77,7 +75,7 @@ def _strip_frontmatter(text: str) -> tuple[str, int]:
 
     Returns (stripped_text, number_of_lines_removed).
     """
-    match = _FRONTMATTER_RE.match(text)
+    match = FRONTMATTER_RE.match(text)
     if match:
         removed = match.group(0)
         lines_removed = removed.count("\n")

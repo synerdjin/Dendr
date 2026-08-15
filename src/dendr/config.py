@@ -51,6 +51,16 @@ class Config:
     def digests_archive_dir(self) -> Path:
         return self.wiki_dir / "digests"
 
+    @property
+    def pages_dir(self) -> Path:
+        """User-authored topic notes (imported from Logseq) — the digital
+        garden's material. Not part of the ingest pipeline; see garden.py."""
+        return self.vault_path / "Pages"
+
+    @property
+    def garden_dashboard_path(self) -> Path:
+        return self.wiki_dir / "garden.md"
+
     # Paths derived from data_dir
     @property
     def db_path(self) -> Path:

@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from dendr import db
+from dendr import db, garden
 from dendr.config import Config
-from dendr.fsutil import atomic_write_text
+from dendr.fsutil import atomic_write_text, iso_week_label
 from dendr.templates import read as read_template
 
 # Prior-digest archive: keep last N digests and feed them back to Claude so
@@ -186,12 +186,6 @@ def _age_suffix(source_date: str) -> str:
     return f"written {days // 365}y ago"
 
 
-def _iso_week_label(dt: datetime) -> str:
-    """Return an ISO week label like '2026-W15' (zero-padded, sortable)."""
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f"{iso_year:04d}-W{iso_week:02d}"
-
-
 def _archive_digest(config: Config, digest_path: Path) -> None:
     """Copy an existing digest.md to Wiki/digests/{iso_week}.md before overwriting.
 
@@ -225,7 +219,7 @@ def _archive_digest(config: Config, digest_path: Path) -> None:
 
     archive_dir = config.digests_archive_dir
     archive_dir.mkdir(parents=True, exist_ok=True)
-    target = archive_dir / f"{_iso_week_label(dt)}.md"
+    target = archive_dir / f"{iso_week_label(dt)}.md"
     if target.exists():
         logger.warning(
             "Overwriting existing archive %s (second digest in the same ISO week)",
@@ -302,11 +296,16 @@ def _gather_digest_data(
     conn: sqlite3.Connection,
     weeks: int = 1,
     use_claude: bool = False,
+    garden_pages: list[garden.PageNote] | None = None,
 ) -> dict:
     """Assemble period-scoped digest data from the knowledge store.
 
     The payload separates `this_period` (blocks written in the digest
     window) from `carried_forward` (still-open work from before).
+
+    `garden_pages` lets a caller that already scanned `Pages/` (like
+    `generate_digest`, which needs the list again for `Wiki/garden.md`) pass
+    it in rather than triggering a second filesystem scan+parse here.
     """
     now = datetime.now()
     since = (now - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
@@ -319,13 +318,21 @@ def _gather_digest_data(
     new_open_tasks = [t for t in all_open if (t.get("source_date") or "") >= since]
     carried_open_tasks = [t for t in all_open if (t.get("source_date") or "") < since]
 
+    period_end = now.strftime("%Y-%m-%d")
+    if garden_pages is None:
+        garden_pages = garden.scan_pages(config)
+    garden_summary = garden.compute_garden_summary(
+        garden_pages, since, period_end, iso_week_label(now)
+    )
+
     return {
         "generated_at": now.isoformat(),
         "period_start": since,
-        "period_end": now.strftime("%Y-%m-%d"),
+        "period_end": period_end,
         "stats": db.get_stats(conn),
         "user_context": _load_user_context(config),
         "intentions": _load_intentions(config),
+        "garden": garden_summary,
         "this_period": {
             "blocks": period_blocks,
             "new_open_tasks": new_open_tasks,
@@ -374,10 +381,13 @@ def build_synthesis_prompt(data: dict) -> str:
             "attention.)*\n"
         )
 
+    garden_section = garden.render_garden_prompt_section(data.get("garden") or {})
+
     template = read_template("synthesis_prompt.md")
     return (
         template.replace("{context_section}", context_section)
         .replace("{intentions_section}", intentions_section)
+        .replace("{garden_section}", garden_section)
         .replace("{data_json}", data_json)
     )
 
@@ -446,6 +456,13 @@ def render_local_digest(data: dict) -> str:
         lines.append("*No notable activity this week. Keep writing!*")
         lines.append("")
 
+    # Garden — deterministic, no Claude needed; same data feeds Wiki/garden.md.
+    garden_section = garden.render_garden_digest_section(data.get("garden") or {})
+    if garden_section:
+        lines.append(garden_section)
+        lines.append(_render_feedback_block("garden"))
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -475,7 +492,10 @@ def generate_digest(
                     feedback_stats["logged_ratings"],
                 )
 
-    data = _gather_digest_data(config, conn, weeks=weeks, use_claude=use_claude)
+    garden_pages = garden.scan_pages(config)
+    data = _gather_digest_data(
+        config, conn, weeks=weeks, use_claude=use_claude, garden_pages=garden_pages
+    )
 
     if use_claude:
         prompt = build_synthesis_prompt(data)
@@ -488,6 +508,8 @@ def generate_digest(
 
     _archive_digest(config, digest_path)
     atomic_write_text(digest_path, content)
+
+    garden.write_dashboard(config, garden_pages, data.get("garden") or {})
 
     this_period = data.get("this_period", {})
     carried_forward = data.get("carried_forward", {})

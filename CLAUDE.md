@@ -57,6 +57,9 @@ dendr digest                          # generate weekly briefing
 dendr digest --claude                 # also generate Claude synthesis prompt
 dendr models pull                     # download all models from manifest
 dendr models verify                   # check SHA256 integrity
+dendr garden init --dry-run           # preview stage/planted/tended backfill on Pages/
+dendr garden init                     # apply it (only fills missing keys)
+dendr garden status                   # print garden stats, refresh Wiki/garden.md
 
 # Run ingest on a schedule (macOS launchd LaunchAgent, every 15 min by default)
 dendr autostart install               # write ~/Library/LaunchAgents/com.dendr.ingest.plist + load it
@@ -108,7 +111,8 @@ dendr digest --claude
 - **metrics.py** — Prometheus counters/gauges/histograms for pipeline and search observability, exposed via `dendr serve`'s `/metrics`
 - **search.py** — FastAPI server on port 7777 with `/search` (FTS + semantic + hybrid over raw block text), `/stats`, and `/metrics` endpoints. Semantic and hybrid results carry a 0-1 `score` (cosine similarity); `min_score` filters out weak matches. Uses per-request DB connections and a threading lock around LLM inference for thread safety under uvicorn's worker pool
 - **autostart.py** — macOS launchd LaunchAgent generation (`dendr autostart install/uninstall/status`). Renders a `~/Library/LaunchAgents/com.dendr.ingest.plist` that runs `<python> -m dendr ingest` with `RunAtLoad` (once at login) + `StartInterval` (every N seconds, 15 min by default via `--interval-minutes`) — each run is a single ingest cycle that exits. Pure plist rendering is unit-tested; launchctl bootstrap/bootout is wrapped with legacy load/unload fallback
-- **digest.py** — Weekly digest generator. Assembles a raw-text payload (this-period blocks + carried-forward open tasks + user context + per-period intentions + last 4 archived digests) and either writes a Claude synthesis prompt to `Wiki/_digest_prompt.md` or renders a minimal local digest. The prompt body lives in `templates/synthesis_prompt.md`. The `## Task Review` section carries age-bucketed closure markers. Before overwriting, the prior `digest.md` is archived to `Wiki/digests/{ISO-week}.md` for cross-week context
+- **digest.py** — Weekly digest generator. Assembles a raw-text payload (this-period blocks + carried-forward open tasks + user context + per-period intentions + garden state + last 4 archived digests) and either writes a Claude synthesis prompt to `Wiki/_digest_prompt.md` or renders a minimal local digest. The prompt body lives in `templates/synthesis_prompt.md`. The `## Task Review` section carries age-bucketed closure markers. Before overwriting, the prior `digest.md` is archived to `Wiki/digests/{ISO-week}.md` for cross-week context
+- **garden.py** — Digital-garden support for `Pages/` (see Key design patterns below). Pure filesystem scan of `Pages/*.md` frontmatter — never touches `state.sqlite` or the ingest pipeline. Sync-conflict copies are skipped via the same `fsutil.is_conflicted_copy`/`scan_order` pipeline.py uses for `Daily/` (Pages/ has no block-ref mechanism to fall back on, so the conflict-shaped name alone is enough to exclude it). `frontmatter.py` backs it with generic YAML frontmatter split/render (separate from `parser.py`'s Daily-note-specific frontmatter *stripping*)
 
 ### Models
 
@@ -118,7 +122,7 @@ Declared in `dendr-models.yaml`. One GGUF model runs via llama-cpp-python:
 
 ### Storage split
 
-- **Vault** (iCloud-synced): `Daily/`, `Wiki/`, `Attachments/` — markdown files the user reads on any device
+- **Vault** (iCloud-synced): `Daily/`, `Wiki/`, `Pages/`, `Attachments/` — markdown files the user reads on any device
 - **Data dir** (local only): `state.sqlite`, `queue/`, `models/` — never synced
 
 ## Key design patterns
@@ -131,3 +135,4 @@ Declared in `dendr-models.yaml`. One GGUF model runs via llama-cpp-python:
 - **Feedback loop**: Digest sections include feedback comment blocks. User ratings are stored in `feedback_scores` and surfaced via `get_section_effectiveness()` so Claude can weight sections by past usefulness
 - **Two-phase queue**: Crash-safe processing via file-based pending → processing → done transitions
 - **Age-is-explicit**: Each block carries `source_date` and a computed `age_days`, and the synthesis prompt warns Claude that anything the user flagged as urgent N days ago was urgent *then*, not today
+- **Digital garden (`Pages/`)**: `Pages/` holds the user's hand-written topic notes (imported from Logseq, predates Dendr) — deliberately outside the ingest pipeline, never touching `state.sqlite`. Each note carries `stage` (`seedling`/`budding`/`evergreen`), `planted`, and `tended` frontmatter, read/backfilled by `garden.py`. `dendr garden init` backfills missing keys on existing notes (never overwrites a stage you've set); `dendr garden status` prints stats and refreshes `Wiki/garden.md` on demand. The same garden summary also feeds the weekly digest as a `garden` payload key and a **Garden** section (deterministic in the local render, Claude-narrated in the `--claude` path) — noting what got tended, the stalest evergreens worth revisiting, and a small weekly "resurface" pick (a stable hash of ISO-week + slug, so it holds for the week and rotates the next)

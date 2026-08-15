@@ -813,13 +813,13 @@ def test_conflicted_copy_is_not_ingested():
 
 
 def test_is_conflicted_copy_patterns():
-    from dendr.pipeline import _is_conflicted_copy
+    from dendr.fsutil import is_conflicted_copy
 
-    assert _is_conflicted_copy(Path("Daily/2026-04-01 2.md"))
-    assert _is_conflicted_copy(Path("Daily/2026-04-01 (1).md"))
-    assert _is_conflicted_copy(Path("Daily/2026-04-01 (conflicted copy 2026-04-02).md"))
+    assert is_conflicted_copy(Path("Daily/2026-04-01 2.md"))
+    assert is_conflicted_copy(Path("Daily/2026-04-01 (1).md"))
+    assert is_conflicted_copy(Path("Daily/2026-04-01 (conflicted copy 2026-04-02).md"))
     # Canonical daily notes are never treated as conflicts.
-    assert not _is_conflicted_copy(Path("Daily/2026-04-01.md"))
+    assert not is_conflicted_copy(Path("Daily/2026-04-01.md"))
 
 
 def test_conflict_shaped_name_with_unique_refs_is_still_ingested():

@@ -10,6 +10,8 @@ Commands:
   dendr models verify        Verify model integrity
   dendr models list          Show model status
   dendr models lock          Pin SHA256 hashes in manifest
+  dendr garden init          Backfill stage/planted/tended frontmatter on Pages/
+  dendr garden status        Show garden stats, refresh Wiki/garden.md
 """
 
 from __future__ import annotations
@@ -630,6 +632,94 @@ def autostart_status() -> None:
             f"⚠  Legacy pre-v8 agent ({agent.LEGACY_LAUNCH_AGENT_LABEL}) still "
             "present — run `dendr autostart install` or `... uninstall` to remove it."
         )
+
+
+# --- Digital garden (Pages/) ---
+
+
+@main.group()
+def garden() -> None:
+    """Manage the Pages/ digital garden (growth-stage frontmatter, dashboard)."""
+
+
+@garden.command("init")
+@click.option("--data-dir", type=click.Path(), default=None)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing")
+def garden_init(data_dir: str | None, vault: str | None, dry_run: bool) -> None:
+    """Backfill stage/planted/tended frontmatter on Pages/ notes.
+
+    Only fills keys that are entirely missing from a note's frontmatter —
+    never overwrites a stage you've already set. Safe to re-run.
+    """
+    from dendr import garden as garden_mod
+    from dendr.config import Config
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
+
+    if not config.pages_dir.exists():
+        click.echo(f"No Pages/ directory at {config.pages_dir}; nothing to do.")
+        return
+
+    changes = garden_mod.backfill_frontmatter(config, dry_run=dry_run)
+    if not changes:
+        click.echo("Every Pages/ note already has stage/planted/tended set.")
+        return
+
+    verb = "Would update" if dry_run else "Updated"
+    click.echo(f"{verb} {len(changes)} note(s):")
+    for path, added in changes:
+        added_str = ", ".join(f"{k}={v}" for k, v in added.items())
+        click.echo(f"  {path.name}: {added_str}")
+
+    if dry_run:
+        click.echo("\nDry run — no files written. Re-run without --dry-run to apply.")
+
+
+@garden.command("status")
+@click.option("--data-dir", type=click.Path(), default=None)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path",
+)
+def garden_status(data_dir: str | None, vault: str | None) -> None:
+    """Show garden stats and refresh Wiki/garden.md, on demand."""
+    from dendr import garden as garden_mod
+    from dendr.config import Config
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
+
+    pages = garden_mod.scan_pages(config)
+    if not pages:
+        click.echo(f"No Pages/ notes found at {config.pages_dir}.")
+        path = garden_mod.write_dashboard(config, pages, {})
+        click.echo(f"Dashboard refreshed: {path}")
+        return
+
+    summary = garden_mod.summary_for_now(pages)
+
+    click.echo(f"{summary['total']} pages in {config.pages_dir}")
+    click.echo(f"  {garden_mod.format_counts(summary['counts'])}")
+    if summary["stalest_evergreens"]:
+        click.echo("Stalest evergreens:")
+        for p in summary["stalest_evergreens"]:
+            click.echo(f"  {p['title']} — last tended {p['tended']}")
+
+    path = garden_mod.write_dashboard(config, pages, summary)
+    click.echo(f"\nDashboard refreshed: {path}")
 
 
 # --- Schema and prompt generation ---
