@@ -1,8 +1,6 @@
-# Dendr
+!# Dendr
 
-A personal knowledge compiler that ingests Obsidian Daily Notes on a schedule, stores each block as raw text in SQLite with FTS and vector search, and generates weekly digests. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
-
-**Local models do only what Claude can't or shouldn't**: embeddings for semantic search. **Claude (via Claude Code)** handles weekly synthesis and on-demand Q&A, so a Pro/Max subscription is enough.
+A personal knowledge management system / Digital Brain that stores each block as raw text in SQLite with FTS and vector search. Claude (via Claude Code) reads the raw blocks directly at digest time and does classification, affect reading, and narrative synthesis in one pass.
 
 ## How it works
 
@@ -24,7 +22,7 @@ Dendr targets Apple Silicon Macs — this is the only platform it's built and ru
 - Python 3.11+
 - [`uv`](https://docs.astral.sh/uv/) for dependency management (`brew install uv`)
 - Local model weights (see [Model Setup](#model-setup))
-- Obsidian vault synced via iCloud (or any sync)
+
 
 ## Install
 
