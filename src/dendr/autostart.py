@@ -1,10 +1,12 @@
-"""macOS launchd LaunchAgent generation for running ingest on a schedule.
+"""macOS launchd LaunchAgent generation for Dendr's two background agents.
 
 Pure helpers (plist rendering, paths, launchctl invocation) live here so the CLI
 layer stays thin and the rendering is unit-testable without touching launchctl.
-The agent runs ``<python> -m dendr ingest`` with ``RunAtLoad`` (once at login)
-and ``StartInterval`` (every N seconds thereafter) — each run is a single ingest
-cycle that exits, not a long-lived process.
+``com.dendr.ingest`` runs ``<python> -m dendr ingest`` with ``RunAtLoad`` (once
+at login) and ``StartInterval`` (every N seconds thereafter) — each run is a
+single ingest cycle that exits, not a long-lived process. ``com.dendr.serve``
+runs ``<python> -m dendr serve`` with ``RunAtLoad`` + ``KeepAlive`` instead,
+since it's a long-lived process launchd should restart if it dies.
 """
 
 from __future__ import annotations
@@ -16,11 +18,7 @@ import sys
 from pathlib import Path
 
 LAUNCH_AGENT_LABEL = "com.dendr.ingest"
-
-# Pre-v8 label: the watcher daemon this agent replaced. `autostart install`
-# cleans up an agent still running under this label so it doesn't keep
-# respawning (KeepAlive) alongside the new scheduled one.
-LEGACY_LAUNCH_AGENT_LABEL = "com.dendr.daemon"
+SERVE_LAUNCH_AGENT_LABEL = "com.dendr.serve"
 
 
 def plist_path(label: str = LAUNCH_AGENT_LABEL) -> Path:
@@ -28,14 +26,16 @@ def plist_path(label: str = LAUNCH_AGENT_LABEL) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def program_args(data_dir: Path | None = None, python: str | None = None) -> list[str]:
+def program_args(
+    data_dir: Path | None = None, python: str | None = None, subcommand: str = "ingest"
+) -> list[str]:
     """Argv launchd should exec.
 
     Uses ``-m dendr`` against the *current* interpreter (``sys.executable``) so
     the agent runs in the exact environment that installed it — no reliance on a
     console script being on ``PATH`` (launchd runs with a bare environment).
     """
-    args = [python or sys.executable, "-m", "dendr", "ingest"]
+    args = [python or sys.executable, "-m", "dendr", subcommand]
     if data_dir is not None:
         args += ["--data-dir", str(data_dir)]
     return args
@@ -45,21 +45,34 @@ def build_plist_dict(
     args: list[str],
     *,
     label: str = LAUNCH_AGENT_LABEL,
-    interval_seconds: int = 900,
+    interval_seconds: int | None = 900,
+    keep_alive: bool = False,
     stdout_path: str | None = None,
     stderr_path: str | None = None,
     working_dir: str | None = None,
 ) -> dict:
-    """Assemble the launchd property-list dict for the scheduled ingest agent."""
+    """Assemble the launchd property-list dict for a Dendr LaunchAgent.
+
+    ``keep_alive=True`` (the search server) runs a long-lived process launchd
+    restarts if it dies; otherwise (the ingest agent) ``interval_seconds``
+    reruns a one-shot job on a timer. The two are mutually exclusive.
+    """
     d: dict = {
         "Label": label,
         "ProgramArguments": args,
         "RunAtLoad": True,
-        "StartInterval": interval_seconds,
-        # Run at lowered priority — this is a background batch job, not an
+        # Run at lowered priority — this is a background job, not an
         # interactive one.
         "ProcessType": "Background",
     }
+    if keep_alive:
+        d["KeepAlive"] = True
+        # launchd's own default throttle (10s) is too tight for a process
+        # that fails fast on every relaunch (e.g. the port already bound by
+        # a manually-run `dendr serve`) — give it room to not spam the log.
+        d["ThrottleInterval"] = 30
+    elif interval_seconds is not None:
+        d["StartInterval"] = interval_seconds
     if stdout_path:
         d["StandardOutPath"] = stdout_path
     if stderr_path:
@@ -115,16 +128,3 @@ def is_loaded(label: str = LAUNCH_AGENT_LABEL) -> bool:
     """Whether launchd currently has the agent loaded."""
     rc, _ = _run(["launchctl", "list", label])
     return rc == 0
-
-
-def remove_legacy_agent(label: str = LEGACY_LAUNCH_AGENT_LABEL) -> Path | None:
-    """Unload + delete a pre-v8 watcher-daemon agent still installed under `label`.
-
-    Returns its plist path if one was found and removed, else None.
-    """
-    path = plist_path(label)
-    if not path.exists():
-        return None
-    unload_agent(path, label=label)
-    path.unlink()
-    return path

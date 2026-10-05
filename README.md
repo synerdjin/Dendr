@@ -43,6 +43,9 @@ make install    # creates ~/.dendr-venv, installs Dendr + dev tools (builds llam
 
 # Run ingest on a schedule (writes a launchd LaunchAgent; every 15 min by default):
 ~/.dendr-venv/bin/dendr autostart install
+
+# Keep the search server running (the Claude digest synthesis prompt queries it):
+~/.dendr-venv/bin/dendr autostart install-serve
 ```
 
 ## Quick start
@@ -84,8 +87,10 @@ See [Regular tasks](#regular-tasks) below for the `Makefile` wrapping these
 | `dendr models list` | Show model status table |
 | `dendr models lock` | Pin SHA256 hashes into manifest |
 | `dendr autostart install` | Run ingest on a schedule via a macOS LaunchAgent |
-| `dendr autostart status` | Show whether the login agent is installed / loaded |
-| `dendr autostart uninstall` | Stop and remove the login agent |
+| `dendr autostart uninstall` | Stop and remove the ingest agent |
+| `dendr autostart install-serve` | Keep the search server running via a macOS LaunchAgent |
+| `dendr autostart uninstall-serve` | Stop and remove the search-server agent |
+| `dendr autostart status` | Show whether the login agents are installed / loaded |
 
 ## Model setup
 

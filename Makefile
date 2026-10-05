@@ -58,19 +58,27 @@ models-verify: ## Check SHA256 integrity of downloaded models
 models-list: ## Show model status table
 	$(DENDR) models list
 
-## --- Scheduled ingest (launchd) -------------------------------------------------
+## --- Scheduled ingest + search server (launchd) ---------------------------------
 
 .PHONY: autostart-install
 autostart-install: ## Run ingest on a schedule via a macOS LaunchAgent
 	$(DENDR) autostart install
 
-.PHONY: autostart-status
-autostart-status: ## Show whether the login agent is installed / loaded
-	$(DENDR) autostart status
-
 .PHONY: autostart-uninstall
-autostart-uninstall: ## Stop and remove the login agent
+autostart-uninstall: ## Stop and remove the ingest agent
 	$(DENDR) autostart uninstall
+
+.PHONY: autostart-install-serve
+autostart-install-serve: ## Keep the search server running via a macOS LaunchAgent
+	$(DENDR) autostart install-serve
+
+.PHONY: autostart-uninstall-serve
+autostart-uninstall-serve: ## Stop and remove the search-server agent
+	$(DENDR) autostart uninstall-serve
+
+.PHONY: autostart-status
+autostart-status: ## Show whether the login agents are installed / loaded
+	$(DENDR) autostart status
 
 ## --- Development ---------------------------------------------------------------
 

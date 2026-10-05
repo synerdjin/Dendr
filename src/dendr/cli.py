@@ -12,6 +12,8 @@ Commands:
   dendr models lock          Pin SHA256 hashes in manifest
   dendr garden init          Backfill stage/planted/tended frontmatter on Pages/
   dendr garden status        Show garden stats, refresh Wiki/garden.md
+  dendr autostart install          Run ingest on a schedule (LaunchAgent)
+  dendr autostart install-serve    Keep the search server running (LaunchAgent)
 """
 
 from __future__ import annotations
@@ -521,13 +523,64 @@ def models_lock(data_dir: str | None) -> None:
 
 @main.group()
 def autostart() -> None:
-    """Manage the login LaunchAgent that runs ingest on a schedule (macOS)."""
+    """Manage the login LaunchAgents for ingest and the search server (macOS)."""
 
 
 def _require_macos() -> None:
     if sys.platform != "darwin":
         raise click.ClickException(
             "`dendr autostart` uses macOS launchd and only works on macOS."
+        )
+
+
+def _write_and_load_agent(
+    config, *, label: str, args: list[str], log_stem: str, **plist_kwargs
+):
+    """Render a LaunchAgent plist, write it, and (re)load it. Returns its path."""
+    from dendr import autostart as agent
+
+    working_dir = str(config.vault_path) if config.vault_path.exists() else None
+    plist = agent.render_plist(
+        args,
+        label=label,
+        stdout_path=str(config.logs_dir / f"{log_stem}.out.log"),
+        stderr_path=str(config.logs_dir / f"{log_stem}.err.log"),
+        working_dir=working_dir,
+        **plist_kwargs,
+    )
+
+    path = agent.plist_path(label)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plist)
+
+    # Reload cleanly if a previous agent is already loaded.
+    agent.unload_agent(path, label=label)
+    rc, out = agent.load_agent(path, label=label)
+    if rc != 0:
+        raise click.ClickException(
+            f"Wrote {path} but `launchctl` failed to load it:\n{out}"
+        )
+    return path
+
+
+def _uninstall_agent(label: str) -> None:
+    from dendr import autostart as agent
+
+    path = agent.plist_path(label)
+    agent.unload_agent(path, label=label)
+    if path.exists():
+        path.unlink()
+        click.echo(f"✓ Removed LaunchAgent: {path}")
+    else:
+        click.echo(f"No LaunchAgent found at {path}; nothing to remove.")
+
+
+def _warn_if_no_saved_config(config, what_fails: str) -> None:
+    if not config.config_file_path.exists():
+        click.echo(
+            f"⚠  No saved config at {config.config_file_path}. "
+            f"Run `dendr init <vault>` first, or {what_fails} will fail to start.",
+            err=True,
         )
 
 
@@ -549,43 +602,19 @@ def autostart_install(data_dir: str | None, interval_minutes: int) -> None:
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
     config.logs_dir.mkdir(parents=True, exist_ok=True)
+    _warn_if_no_saved_config(config, "ingest")
 
-    if not config.config_file_path.exists():
-        click.echo(
-            f"⚠  No saved config at {config.config_file_path}. "
-            "Run `dendr init <vault>` first, or ingest will fail to start.",
-            err=True,
-        )
-
-    # Clean up a pre-v8 watcher-daemon agent if it's still installed, so it
-    # doesn't keep running (KeepAlive) alongside the new scheduled one.
-    legacy_path = agent.remove_legacy_agent()
-    if legacy_path:
-        click.echo(f"✓ Removed legacy LaunchAgent: {legacy_path}")
-
-    working_dir = str(config.vault_path) if config.vault_path.exists() else None
-    plist = agent.render_plist(
-        agent.program_args(config.data_dir),
+    args = agent.program_args(config.data_dir)
+    path = _write_and_load_agent(
+        config,
+        label=agent.LAUNCH_AGENT_LABEL,
+        args=args,
+        log_stem="ingest",
         interval_seconds=interval_minutes * 60,
-        stdout_path=str(config.logs_dir / "ingest.out.log"),
-        stderr_path=str(config.logs_dir / "ingest.err.log"),
-        working_dir=working_dir,
     )
 
-    path = agent.plist_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(plist)
-
-    # Reload cleanly if a previous agent is already loaded.
-    agent.unload_agent(path)
-    rc, out = agent.load_agent(path)
-    if rc != 0:
-        raise click.ClickException(
-            f"Wrote {path} but `launchctl` failed to load it:\n{out}"
-        )
-
     click.echo(f"✓ Installed LaunchAgent: {path}")
-    click.echo(f"  Runs: {' '.join(agent.program_args(config.data_dir))}")
+    click.echo(f"  Runs: {' '.join(args)}")
     click.echo(f"  Every {interval_minutes} minutes, plus once at login.")
     click.echo(f"  Logs: {config.logs_dir}/ingest.{{out,err}}.log")
     click.echo("  Manage it with `dendr autostart status` / `... uninstall`.")
@@ -597,41 +626,69 @@ def autostart_uninstall() -> None:
     from dendr import autostart as agent
 
     _require_macos()
+    _uninstall_agent(agent.LAUNCH_AGENT_LABEL)
 
-    path = agent.plist_path()
-    agent.unload_agent(path)
-    if path.exists():
-        path.unlink()
-        click.echo(f"✓ Removed LaunchAgent: {path}")
-    else:
-        click.echo(f"No LaunchAgent found at {path}; nothing to remove.")
 
-    legacy_path = agent.remove_legacy_agent()
-    if legacy_path:
-        click.echo(f"✓ Removed legacy LaunchAgent: {legacy_path}")
+@autostart.command("install-serve")
+@click.option("--data-dir", type=click.Path(), default=None)
+def autostart_install_serve(data_dir: str | None) -> None:
+    """Install + load a LaunchAgent that keeps the search server running."""
+    from dendr import autostart as agent
+    from dendr.config import Config
+
+    _require_macos()
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    config.logs_dir.mkdir(parents=True, exist_ok=True)
+    _warn_if_no_saved_config(config, "the search server")
+
+    args = agent.program_args(config.data_dir, subcommand="serve")
+    path = _write_and_load_agent(
+        config,
+        label=agent.SERVE_LAUNCH_AGENT_LABEL,
+        args=args,
+        log_stem="serve",
+        keep_alive=True,
+    )
+
+    click.echo(f"✓ Installed LaunchAgent: {path}")
+    click.echo(f"  Runs: {' '.join(args)}")
+    click.echo(f"  Kept alive at login; search API on :{config.search_port}.")
+    click.echo(f"  Logs: {config.logs_dir}/serve.{{out,err}}.log")
+    click.echo("  Manage it with `dendr autostart status` / `... uninstall-serve`.")
+
+
+@autostart.command("uninstall-serve")
+def autostart_uninstall_serve() -> None:
+    """Stop + remove the search-server LaunchAgent."""
+    from dendr import autostart as agent
+
+    _require_macos()
+    _uninstall_agent(agent.SERVE_LAUNCH_AGENT_LABEL)
 
 
 @autostart.command("status")
 def autostart_status() -> None:
-    """Show whether the login LaunchAgent is installed and loaded."""
+    """Show whether the login LaunchAgents are installed and loaded."""
     from dendr import autostart as agent
 
     _require_macos()
 
-    path = agent.plist_path()
-    installed = path.exists()
-    loaded = agent.is_loaded()
-    click.echo(f"Plist:  {path}  ({'present' if installed else 'absent'})")
-    click.echo(f"Loaded: {'yes (running / scheduled)' if loaded else 'no'}")
-    if installed and not loaded:
-        click.echo("  Installed but not loaded — try `dendr autostart install`.")
-
-    legacy_path = agent.plist_path(agent.LEGACY_LAUNCH_AGENT_LABEL)
-    if legacy_path.exists() or agent.is_loaded(agent.LEGACY_LAUNCH_AGENT_LABEL):
+    agents = [
+        (agent.LAUNCH_AGENT_LABEL, "ingest", "dendr autostart install"),
+        (agent.SERVE_LAUNCH_AGENT_LABEL, "serve", "dendr autostart install-serve"),
+    ]
+    for label, name, install_hint in agents:
+        path = agent.plist_path(label)
+        installed = path.exists()
+        loaded = agent.is_loaded(label)
         click.echo(
-            f"⚠  Legacy pre-v8 agent ({agent.LEGACY_LAUNCH_AGENT_LABEL}) still "
-            "present — run `dendr autostart install` or `... uninstall` to remove it."
+            f"{name:<6} plist:  {path}  ({'present' if installed else 'absent'})"
         )
+        click.echo(f"{name:<6} loaded: {'yes' if loaded else 'no'}")
+        if installed and not loaded:
+            click.echo(f"  Installed but not loaded — try `{install_hint}`.")
 
 
 # --- Digital garden (Pages/) ---

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from dendr.config import ModelConfig
 from dendr.model_manager import (
     ModelManifest,
     check_all_models,
@@ -12,6 +13,8 @@ from dendr.model_manager import (
     preflight_check,
     sha256_file,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_manifest(path: Path, models: dict | None = None) -> Path:
@@ -142,3 +145,12 @@ def test_preflight_hash_mismatch():
         errors = preflight_check(models_dir, manifest)
         assert len(errors) == 1
         assert "mismatch" in errors[0].lower()
+
+
+def test_default_embedding_model_matches_manifest():
+    """ModelConfig's default filename is a separate literal from
+    dendr-models.yaml's — nothing enforces they stay in sync, so a model
+    swap that updates one and not the other would silently load the wrong
+    (or no) file. Catch that drift here instead."""
+    manifest = ModelManifest.load(_REPO_ROOT / "dendr-models.yaml")
+    assert ModelConfig().embedding_model == manifest.specs["embedding"].filename

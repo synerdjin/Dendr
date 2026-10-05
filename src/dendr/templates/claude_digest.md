@@ -11,3 +11,7 @@ prompt and write the result to `Wiki/digest.md`.
 3. Follow the instructions in that prompt verbatim. Do not improvise framing.
 4. Write the synthesis output to `Wiki/digest.md`, preserving the closure
    markers (`<!-- closure:... -->`) so they round-trip on next ingest.
+5. Delete `Wiki/_digest_prompt.md`. It's a scratch payload (raw block text
+   already duplicated into `digest.md` and the source `Daily/` notes) —
+   nothing reads it after this step, and it's not worth syncing across
+   devices for a week.

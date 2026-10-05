@@ -19,7 +19,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${DENDR_VENV:-$HOME/.dendr-venv}"
 DENDR="$VENV/bin/dendr"
 LABEL="com.dendr.ingest"
-LEGACY_LABEL="com.dendr.daemon"  # pre-v8 watcher daemon; migrated below if still loaded
+SERVE_LABEL="com.dendr.serve"
 
 cd "$REPO_DIR"
 
@@ -58,20 +58,20 @@ if ! "$DENDR" models verify; then
   "$DENDR" models pull
 fi
 
-# --- 4. Kick the agent so its next ingest run uses the new code --------------
-if launchctl list "$LABEL" >/dev/null 2>&1; then
-  echo "==> restarting ingest agent ($LABEL)"
-  launchctl kickstart -k "gui/$(id -u)/$LABEL"
-  echo "    agent restarted"
-elif launchctl list "$LEGACY_LABEL" >/dev/null 2>&1; then
-  # Still on the pre-v8 watcher daemon (`dendr daemon`, now deleted) — leaving
-  # it running would crash-loop on its next restart. `autostart install`
-  # removes the legacy agent and installs the scheduled one in its place.
-  echo "==> found legacy agent ($LEGACY_LABEL) still loaded — migrating"
-  "$DENDR" autostart install
-else
-  echo "==> ingest agent not loaded (skip restart)"
-  echo "    start it with: dendr autostart install"
-fi
+# --- 4. Kick the agents so they pick up the new code -------------------------
+kick_agent() {
+  local label="$1" name="$2" install_hint="$3"
+  if launchctl list "$label" >/dev/null 2>&1; then
+    echo "==> restarting $name agent ($label)"
+    launchctl kickstart -k "gui/$(id -u)/$label"
+    echo "    agent restarted"
+  else
+    echo "==> $name agent not loaded (skip restart)"
+    echo "    start it with: $install_hint"
+  fi
+}
+
+kick_agent "$LABEL" "ingest" "dendr autostart install"
+kick_agent "$SERVE_LABEL" "search server" "dendr autostart install-serve"
 
 echo "==> done"

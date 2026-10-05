@@ -85,19 +85,37 @@ The payload is split by time:
 
 ## Tools available
 
-When the weekly payload isn't enough — e.g. you want to check how often a
-theme has recurred over the past year, or pull the exact wording of a block
-the user referenced obliquely — you can query the user's knowledge base
-directly via the Dendr search API (started with `dendr serve`):
+The weekly payload below is deliberately scoped to this period + carried-forward
+open tasks + the last 4 digests. For anything that spans further back than
+that, query the user's full knowledge base directly via the Dendr search API
+(`dendr serve` runs continuously as a LaunchAgent, so it's always reachable):
 
 - Endpoint: `http://localhost:7777/search?q=<query>&mode=hybrid&limit=10`
 - Modes: `fts` (keyword), `semantic` (embeddings), `hybrid` (both — recommended)
 - Returns raw blocks with `source_date`, `text`, `checkbox_state`,
   `completion_status`, and a similarity `score` for semantic results.
 
-Use sparingly. Default to the payload below. Only query when a specific claim
-would be meaningfully stronger with historical evidence, and say what you
-queried and why.
+Use it actively, not as a last resort — the payload is a starting point, not
+the full record. In particular:
+
+- When the user claims progress on something ("finally started X", "been
+  consistent with Y"), search for the actual history before taking the claim
+  at face value — does the record support it, or contradict it?
+- When a theme in this week's blocks feels recurring, search for it rather
+  than guessing from memory of the payload alone — confirm the pattern, or
+  find out it's thinner than it feels.
+- When `prior_digests` raised a question or named a gap, search for whether
+  it was actually addressed, not just whether it was mentioned again this
+  week.
+
+These triggers often overlap — one recurring theme can cover several claims
+and a stale question at once. Query once per distinct thing you need to
+check, not once per sentence that raises it; each query blocks on a local
+embedding inference, so a handful of targeted searches beats a dozen
+near-duplicate ones.
+
+Cite what you queried and found the same way you cite a block: with the dates
+of what came back.
 
 ## Critical reading rule — urgency is historical
 

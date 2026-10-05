@@ -1,6 +1,6 @@
 [project]
 name = "dendr"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Personal knowledge compiler: Obsidian Daily Notes → LLM-maintained wiki"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,6 +31,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "dendr.__version__"}
 
 [tool.setuptools.package-data]
 "dendr.templates" = ["*.md"]
