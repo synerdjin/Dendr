@@ -687,3 +687,97 @@ def test_render_local_digest_includes_garden_block():
     assert "## Garden" in result
     assert "[[y]]" in result
     assert "feedback:garden" in result
+
+
+# ── Frontmatter summaries / semantic-drift guard ──────────────────────
+
+
+def test_synthesis_prompt_has_anti_drift_rules():
+    """Prior digests must be framed as Claude's own drafts, not ground truth."""
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": "2026-04-03",
+        "period_end": "2026-04-10",
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    prompt = build_synthesis_prompt(data)
+    assert "your own drafts" in prompt.lower()
+    # And the frontmatter output instruction with summary/themes
+    assert "summary:" in prompt
+    assert "themes:" in prompt
+
+
+def test_render_local_digest_emits_summary_frontmatter():
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "period_start": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "period_end": today,
+        "stats": {"blocks": 0, "open_tasks": 0},
+        "this_period": {"blocks": [], "new_open_tasks": []},
+        "carried_forward": {"open_tasks": []},
+        "section_effectiveness": {},
+    }
+    result = render_local_digest(data)
+    assert "summary:" in result
+    assert "themes: []" in result
+
+
+def test_load_prior_digests_summarizes_older(tmp_path):
+    """Newest `full` digests keep content; older ones collapse to summary/themes."""
+    from dendr.config import Config
+    from dendr.digest import load_prior_digests
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.digests_archive_dir.mkdir(parents=True, exist_ok=True)
+
+    for week in ["2026-W12", "2026-W13", "2026-W14"]:
+        (config.digests_archive_dir / f"{week}.md").write_text(
+            "---\ntype: digest\ngenerated: 2026-01-01T00:00:00\n"
+            f"summary: headline for {week}\nthemes: [alpha, beta]\n---\n\n"
+            f"# Weekly Digest\n\nFull body text for {week}.\n",
+            encoding="utf-8",
+        )
+
+    prior = load_prior_digests(config, n=3, full=2)
+    assert prior[0]["iso_week"] == "2026-W14"
+    assert "Full body text for 2026-W14" in prior[0]["content"]
+    assert "content" in prior[1]
+    # Oldest is summary-only
+    assert prior[2]["iso_week"] == "2026-W12"
+    assert "content" not in prior[2]
+    assert prior[2]["summary"] == "headline for 2026-W12"
+    assert prior[2]["themes"] == ["alpha", "beta"]
+
+
+def test_load_prior_digests_summary_falls_back_to_body(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import load_prior_digests
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.digests_archive_dir.mkdir(parents=True, exist_ok=True)
+    for week in ["2026-W10", "2026-W11", "2026-W12"]:
+        (config.digests_archive_dir / f"{week}.md").write_text(
+            f"---\ntype: digest\n---\n\nFirst line of {week}.\n",
+            encoding="utf-8",
+        )
+    prior = load_prior_digests(config, n=3, full=2)
+    assert prior[2]["summary"] == "First line of 2026-W10."
+
+
+def test_build_health_check_prompt(tmp_path):
+    from dendr.config import Config
+    from dendr.digest import build_health_check_prompt
+
+    config = Config(vault_path=tmp_path, data_dir=tmp_path / "data")
+    config.digests_archive_dir.mkdir(parents=True, exist_ok=True)
+    (config.digests_archive_dir / "2026-W15.md").write_text(
+        "---\ntype: digest\nsummary: a thin week\n---\n\nbody\n", encoding="utf-8"
+    )
+    prompt = build_health_check_prompt(config, n=12)
+    assert "meta-review" in prompt
+    assert "Recurring concerns" in prompt
+    assert "2026-W15" in prompt

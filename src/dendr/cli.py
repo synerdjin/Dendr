@@ -5,6 +5,7 @@ Commands:
   dendr ingest               Run a single ingest cycle
   dendr search <query>       Search the knowledge base
   dendr serve                Start the search server
+  dendr mcp                  Start the MCP server (stdio) for Claude clients
   dendr stats                Show knowledge base statistics
   dendr models pull          Download models from manifest
   dendr models verify        Verify model integrity
@@ -311,20 +312,58 @@ def serve(data_dir: str | None, vault: str | None, host: str) -> None:
     "--vault",
     type=click.Path(exists=True, file_okay=False),
     default=None,
-    help="Override vault path (needed when config.json has a stale path)",
+    help="Override vault path (needed when config.json has a stale path, e.g. inside containers)",
 )
-@click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
-@click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
-def digest(data_dir: str | None, vault: str | None, weeks: int, claude: bool) -> None:
-    """Generate a weekly digest briefing."""
+def mcp(data_dir: str | None, vault: str | None) -> None:
+    """Run the MCP server (stdio) so a Claude client can search the vault.
+
+    Requires the optional 'mcp' extra: pip install 'dendr[mcp]'.
+    """
     from dendr.config import Config
-    from dendr.db import connect, init_schema
-    from dendr.digest import generate_digest
+    from dendr.mcp_server import run_mcp_server
 
     dd = Path(data_dir) if data_dir else None
     config = Config.load(dd)
     if vault:
         config.vault_path = Path(vault).resolve()
+    run_mcp_server(config)
+
+
+@main.command()
+@click.option("--data-dir", type=click.Path(), default=None)
+@click.option(
+    "--vault",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Override vault path (needed when config.json has a stale path, e.g. inside containers)",
+)
+@click.option("--weeks", type=int, default=1, help="Number of weeks to cover")
+@click.option("--claude", is_flag=True, help="Also generate Claude synthesis prompt")
+@click.option(
+    "--review",
+    is_flag=True,
+    help="Generate a long-horizon health-check meta-review over the digest "
+    "archive instead of a weekly digest",
+)
+def digest(
+    data_dir: str | None, vault: str | None, weeks: int, claude: bool, review: bool
+) -> None:
+    """Generate a weekly digest briefing (or a health-check meta-review)."""
+    from dendr.config import Config
+    from dendr.db import connect, init_schema
+    from dendr.digest import generate_digest, generate_health_check
+
+    dd = Path(data_dir) if data_dir else None
+    config = Config.load(dd)
+    if vault:
+        config.vault_path = Path(vault).resolve()
+
+    if review:
+        path = generate_health_check(config)
+        click.echo(f"Health-check prompt at: {path}")
+        click.echo("Run a Claude Code session over it to synthesize the meta-review.")
+        return
+
     conn = connect(config.db_path)
     init_schema(conn)
 
