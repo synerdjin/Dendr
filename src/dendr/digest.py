@@ -24,9 +24,19 @@ from dendr.fsutil import atomic_write_text, iso_week_label
 from dendr.templates import read as read_template
 
 # Prior-digest archive: keep last N digests and feed them back to Claude so
-# the coaching prompt can review commitments across weeks.
+# the coaching prompt can review commitments across weeks. The most recent
+# PRIOR_DIGEST_FULL_COUNT are passed as full text (truncated to the char limit);
+# older ones are condensed to their frontmatter summary/themes so more weeks of
+# history fit in the payload without bloating it — and to keep Claude from
+# re-reading its own stale prose verbatim (semantic-drift guard).
 PRIOR_DIGEST_COUNT = 4
+PRIOR_DIGEST_FULL_COUNT = 2
 PRIOR_DIGEST_CHAR_LIMIT = 4000
+
+# Long-horizon health check (`dendr digest --review`) scans a wider window of
+# archived digests to surface recurring concerns, dropped threads, and
+# cross-week contradictions the rolling weekly window can't see.
+HEALTH_CHECK_DIGEST_COUNT = 12
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +46,40 @@ _FEEDBACK_RE = re.compile(
 )
 
 _GENERATED_FIELD_RE = re.compile(r"generated:\s*(\S+)")
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+_SUMMARY_FIELD_RE = re.compile(r"^summary:\s*(.+)$", re.MULTILINE)
+_THEMES_FIELD_RE = re.compile(r"^themes:\s*(.+)$", re.MULTILINE)
+
+
+def _digest_frontmatter(text: str) -> dict:
+    """Extract `summary`/`themes` from a digest's YAML frontmatter, if present.
+
+    Returns a dict with optional `summary` (str) and `themes` (list[str]) keys.
+    Best-effort regex parse — avoids a YAML dependency for two scalar fields.
+    """
+    m = _FRONTMATTER_RE.match(text)
+    block = m.group(1) if m else ""
+    out: dict = {}
+    sm = _SUMMARY_FIELD_RE.search(block)
+    if sm:
+        out["summary"] = sm.group(1).strip()
+    tm = _THEMES_FIELD_RE.search(block)
+    if tm:
+        raw = tm.group(1).strip().strip("[]")
+        themes = [t.strip().strip("'\"") for t in raw.split(",") if t.strip()]
+        if themes:
+            out["themes"] = themes
+    return out
+
+
+def _first_body_line(text: str, max_len: int = 200) -> str:
+    """First non-empty line after frontmatter — a fallback summary."""
+    body = _FRONTMATTER_RE.sub("", text, count=1)
+    for line in body.splitlines():
+        line = line.strip().lstrip("#").strip()
+        if line:
+            return line[:max_len]
+    return ""
 
 
 @dataclass
@@ -229,25 +273,45 @@ def _archive_digest(config: Config, digest_path: Path) -> None:
     logger.info("Archived previous digest to %s", target)
 
 
-def load_prior_digests(config: Config, n: int = PRIOR_DIGEST_COUNT) -> list[dict]:
+def load_prior_digests(
+    config: Config,
+    n: int = PRIOR_DIGEST_COUNT,
+    full: int = PRIOR_DIGEST_FULL_COUNT,
+) -> list[dict]:
     """Load the last `n` archived digests, newest-first.
 
-    Each entry is `{"iso_week": "YYYY-Www", "content": <markdown>}`.
-    Content truncated to PRIOR_DIGEST_CHAR_LIMIT so the full payload stays tidy.
+    The most recent `full` digests are returned with full markdown `content`
+    (truncated to PRIOR_DIGEST_CHAR_LIMIT). Older ones are condensed to their
+    frontmatter `summary`/`themes` (falling back to the first body line) so the
+    payload can span more weeks cheaply without re-feeding Claude its own stale
+    prose verbatim.
+
+    Full entries:    `{"iso_week", "content"}`
+    Summary entries: `{"iso_week", "summary", "themes"}`
     """
     archive_dir = config.digests_archive_dir
     if not archive_dir.exists():
         return []
     files = sorted(archive_dir.glob("*.md"), reverse=True)[:n]
     results: list[dict] = []
-    for p in files:
+    for i, p in enumerate(files):
         try:
             text = p.read_text(encoding="utf-8")
         except OSError:
             continue
-        if len(text) > PRIOR_DIGEST_CHAR_LIMIT:
-            text = text[:PRIOR_DIGEST_CHAR_LIMIT] + "\n\n[...truncated]"
-        results.append({"iso_week": p.stem, "content": text})
+        if i < full:
+            if len(text) > PRIOR_DIGEST_CHAR_LIMIT:
+                text = text[:PRIOR_DIGEST_CHAR_LIMIT] + "\n\n[...truncated]"
+            results.append({"iso_week": p.stem, "content": text})
+        else:
+            fm = _digest_frontmatter(text)
+            results.append(
+                {
+                    "iso_week": p.stem,
+                    "summary": fm.get("summary") or _first_body_line(text),
+                    "themes": fm.get("themes", []),
+                }
+            )
     return results
 
 
@@ -345,20 +409,24 @@ def _gather_digest_data(
     }
 
 
+def _context_section(user_context: str | None) -> str:
+    """Render the '## Who the user is' block for a synthesis-style prompt."""
+    user_context = (user_context or "").strip()
+    if user_context:
+        return f"\n## Who the user is\n\n{user_context}\n"
+    return (
+        "\n## Who the user is\n\n"
+        "*(No `Wiki/_user_context.md` file found. The user can create one "
+        "with free-form background on their role, life situation, active "
+        "goals, and stable constraints to give you better grounding.)*\n"
+    )
+
+
 def build_synthesis_prompt(data: dict) -> str:
     """Build the Claude synthesis prompt by filling templates/synthesis_prompt.md."""
     data_json = json.dumps(data, indent=2, default=str)
 
-    user_context = (data.get("user_context") or "").strip()
-    if user_context:
-        context_section = f"\n## Who the user is\n\n{user_context}\n"
-    else:
-        context_section = (
-            "\n## Who the user is\n\n"
-            "*(No `Wiki/_user_context.md` file found. The user can create one "
-            "with free-form background on their role, life situation, active "
-            "goals, and stable constraints to give you better grounding.)*\n"
-        )
+    context_section = _context_section(data.get("user_context"))
 
     intentions = (data.get("intentions") or "").strip()
     if intentions:
@@ -392,6 +460,40 @@ def build_synthesis_prompt(data: dict) -> str:
     )
 
 
+def build_health_check_prompt(
+    config: Config, n: int = HEALTH_CHECK_DIGEST_COUNT
+) -> str:
+    """Build the long-horizon meta-review prompt over the digest archive.
+
+    Loads a wider window of archived digests than the weekly synthesis (full
+    text for the most recent, summaries for older ones) and fills
+    templates/health_check_prompt.md.
+    """
+    data = {
+        "generated_at": datetime.now().isoformat(),
+        "window": f"last {n} archived digests",
+        "user_context": _load_user_context(config),
+        "prior_digests": load_prior_digests(config, n=n),
+    }
+    data_json = json.dumps(data, indent=2, default=str)
+    context_section = _context_section(data["user_context"])
+    template = read_template("health_check_prompt.md")
+    return template.replace("{context_section}", context_section).replace(
+        "{data_json}", data_json
+    )
+
+
+def generate_health_check(config: Config, n: int = HEALTH_CHECK_DIGEST_COUNT) -> str:
+    """Write the health-check meta-review prompt to Wiki/_health_check_prompt.md."""
+    prompt = build_health_check_prompt(config, n=n)
+    path = config.wiki_dir / "_health_check_prompt.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(prompt, encoding="utf-8")
+    config.append_activity_log("HEALTH-CHECK prompt generated")
+    logger.info("Health-check prompt written to %s", path)
+    return str(path)
+
+
 def render_local_digest(data: dict) -> str:
     """Render a minimal local digest (no Claude). Mostly the task review."""
     now_str = data["period_end"]
@@ -402,11 +504,20 @@ def render_local_digest(data: dict) -> str:
     fresh_tasks = this_period.get("new_open_tasks", [])
     review_tasks = carried_forward.get("open_tasks", [])
 
+    # The local (non-Claude) path has no synthesis, so the summary is purely
+    # quantitative; the Claude path fills a real one-sentence summary itself.
+    summary = (
+        f"{len(period_blocks)} blocks, {len(fresh_tasks)} new and "
+        f"{len(review_tasks)} carried-forward open tasks"
+    )
+
     lines = [
         "---",
         "type: digest",
         f"generated: {data['generated_at']}",
         f"period: {period_start} to {now_str}",
+        f"summary: {summary}",
+        "themes: []",
         "---",
         "",
         f"# Weekly Digest — {now_str}",

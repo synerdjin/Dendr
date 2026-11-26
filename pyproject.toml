@@ -17,6 +17,10 @@ dependencies = [
     "prometheus-client>=0.25.0",
 ]
 
+[project.optional-dependencies]
+# Stdio MCP server (`dendr mcp`) for Claude Desktop / Claude Code clients.
+mcp = ["mcp>=1.2"]
+
 [project.scripts]
 dendr = "dendr.cli:main"
 

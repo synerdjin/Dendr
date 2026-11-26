@@ -71,10 +71,12 @@ The payload is split by time:
   this still alive, or do I need to let it go?"
 - `intentions` — the user's stated intentions for THIS period (also shown
   above). Free-form, possibly empty. The reference point for drift.
-- `prior_digests` — the last ~4 weekly digests, newest first. Use them for the
-  Review step: which experiments, questions, or open loops did you raise
-  previously? Which are still live in this week's entries? Which quietly
-  disappeared? Empty list on the first run.
+- `prior_digests` — recent weekly digests, newest first. The most recent one or
+  two carry full `content`; older ones are condensed to a `summary` line plus
+  `themes`. Use them for the Review step: which experiments, questions, or open
+  loops did you raise previously? Which are still live in this week's entries?
+  Which quietly disappeared? Empty list on the first run. See "Prior digests are
+  your own drafts" below before you lean on them.
 - `garden` — state of `Pages/`, the user's hand-written topic notes (a
   separate, private "digital garden" — not part of `this_period.blocks`).
   `{}` if the user has no `Pages/` notes. Otherwise: `counts` (seedling/
@@ -133,6 +135,19 @@ urgent 3 weeks ago was urgent *then*, not today. Prefer
   without new causal or insight language appearing, shift from exploration to
   one concrete small action. Reflection without new insight is rumination.
 
+## Prior digests are your own drafts, not facts
+
+`prior_digests` is YOUR OWN earlier output, re-ingested. Treat it as a set of
+hypotheses to test against this week's raw blocks — never as established truth.
+
+- Don't restate a prior digest's claim as settled. Re-derive it from the raw
+  dated blocks in `this_period` and `carried_forward`.
+- When you cite a multi-week pattern, cite the underlying dated blocks, not the
+  prior digest's summary of them.
+- If a prior framing isn't supported by this week's raw text, drop it. Don't
+  carry a narrative forward just because you wrote it before — repeating your
+  own prose week over week is how a sharp observation decays into filler.
+
 ## Data
 
 ```json
@@ -147,8 +162,25 @@ Spend depth on high-scoring sections. Skip or minimize low-scoring ones.
 
 ## Output format
 
-Write markdown with ONLY sections that have genuine, specific insights. Every
-piece of advice MUST reference the user's actual words or patterns — no
+Begin the file with YAML frontmatter, then the sections below:
+
+```
+---
+type: digest
+generated: <copy `generated_at` from the Data payload verbatim>
+period: <period_start> to <period_end>
+summary: <one sentence, ≤200 chars — the single most important thread this week>
+themes: [<3-5 short lowercase tags, e.g. burnout, hiring, sleep>]
+---
+```
+
+The `generated:` field MUST copy `generated_at` exactly — Dendr reads it to
+archive this digest under the right ISO week. `summary:` and `themes:` are how
+future runs scan this week cheaply, so make them specific and evidence-based,
+not generic.
+
+Then write markdown with ONLY sections that have genuine, specific insights.
+Every piece of advice MUST reference the user's actual words or patterns — no
 generic productivity advice.
 
 ### Sections (include only if substantive):
